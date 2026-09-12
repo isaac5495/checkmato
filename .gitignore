@@ -11,5 +11,7 @@ web/.vercel/
 checkmato.toml
 logs/
 .ruff_cache/
+Kingsoft_ACRC_Case_Draft_v20260901_English.docx
+
 
 render.yaml.bak
