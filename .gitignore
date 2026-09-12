@@ -11,3 +11,5 @@ web/.vercel/
 checkmato.toml
 logs/
 .ruff_cache/
+
+render.yaml.bak

@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: checkmato
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: CHECKMATO_CORS_ORIGINS
+        value: "*"   # tighten to the Vercel URL after go-live
+      # Add BRAVEX_API_KEY / AGNES_API_KEY in the Render dashboard (Secret File
+      # or encrypted env) — never in this file.
