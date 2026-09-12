@@ -1,0 +1,13 @@
+# SearXNG for CheckMato: JSON API enabled (off by default -> plain docker run
+# refuses format=json), limiter off (it exists to stop API use on PUBLIC
+# instances; ours is localhost-only), engines left at their defaults so
+# google/bing/duckduckgo all contribute.
+use_default_settings: true
+search:
+  formats:
+    - html
+    - json
+server:
+  secret_key: "0e9a7d3f61bb4c52a8d4e7f02c5b9e61"
+  limiter: false
+  image_proxy: false

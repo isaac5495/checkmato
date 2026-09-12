@@ -1,0 +1,10 @@
+# CheckMato settings — copy to checkmato.toml and adjust.
+# Anything omitted falls back to the built-in default (shown here).
+
+max_search          = 60      # web search budget per run
+fx_tolerance        = 0.10    # FX recompute pass band (10%)
+quote_verbatim_cut  = 0.98    # >= this => verbatim `supported`
+quote_paraphrase_cut = 0.62   # >= this => `paraphrase_flag`
+llm_max_calls       = 20      # per-run LLM call cap
+llm_max_tokens      = 60000   # per-run LLM token cap
+whitelist = []                # e.g. ["reuters.com","gov.cn","hkex.com.hk"]

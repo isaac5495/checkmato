@@ -1,0 +1,15 @@
+# CheckMato's optional second search backend (keyless Google/Bing/DDG aggregator).
+# Bound to 127.0.0.1 ONLY: this box is a private helper, never a public proxy.
+#   start:  docker compose -f deploy\searxng\docker-compose.yml up -d
+#   stop:   docker compose -f deploy\searxng\docker-compose.yml down
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: checkmato-searxng
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    restart: unless-stopped

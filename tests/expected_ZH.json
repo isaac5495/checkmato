@@ -1,0 +1,18 @@
+[
+  {"id": "Z1_wrong_year", "desc": "成立于1988 vs 书内1992",
+   "hints": ["1988"], "verdicts": ["contradicted"]},
+  {"id": "Z2_true_year", "desc": "2011年MBO与书内一致",
+   "hints": ["2011"], "verdicts": ["supported"]},
+  {"id": "Z3_currency_mismatch", "desc": "1.89亿元 vs 书内1.89亿港元（币种错标）",
+   "hints": ["1.89亿元", "2400万美元"], "verdicts": ["contradicted"]},
+  {"id": "Z4_misattributed", "desc": "真实引语被安到张旋龙头上（原文肖彬）",
+   "hints": ["我们就是公司的主人"], "verdicts": ["misattributed"]},
+  {"id": "Z5_count_conflict", "desc": "40名核心管理者 vs 30人团队（文内矛盾）",
+   "hints": ["40名", "30人"], "verdicts": ["internal_conflict"]},
+  {"id": "Z6_placeholder", "desc": "[?待确认?] 占位符残留",
+   "hints": ["[?待确认?]"], "verdicts": ["needs_fix"]},
+  {"id": "Z7_footnotes", "desc": "[^9] 无定义、[^5] 未被引用",
+   "hints": ["[^9]", "[^5]"], "verdicts": ["structure"]},
+  {"id": "Z8_name_drift", "desc": "同一句话先说者小王、后称老刘（非别名）",
+   "hints": ["小王", "老刘"], "verdicts": ["needs_fix"]}
+]

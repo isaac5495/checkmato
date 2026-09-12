@@ -1,0 +1,10 @@
+[
+  {"id": "K1_pronoun_subject", "desc": "pronoun 'He had graduated in 1984' — no resolvable subject offline",
+   "hints": ["He had graduated in 1984"], "verdicts": ["unverified"]},
+  {"id": "K1b_predicate_guard", "desc": "'Qiu Bojun graduated 1984' vs source 'graduated 1986': name-only overlap must NOT fake a predicate match unless the event word matches",
+   "hints": ["Qiu Bojun graduated in 1984 from Fudan"], "verdicts": ["unverified"]},
+  {"id": "K2_cross_script", "desc": "'WPS announced by Kingsoft 1989' supported from ZH line via alias",
+   "hints": ["WPS was announced by Kingsoft"], "verdicts": ["supported"]},
+  {"id": "K3_loose_year", "desc": "'coding WPS through 1993' — WPS line has different year, no predicate",
+   "hints": ["1993"], "verdicts": ["unverified"]}
+]

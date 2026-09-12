@@ -1,0 +1,31 @@
+app = "checkmato"
+primary_region = "sin"   # change to your nearest region
+
+[build]
+
+[env]
+  PORT = "8000"
+  CHECKMATO_CORS_ORIGINS = "*"   # lock to your Vercel URL after the first deploy
+
+[[mounts]]
+  source = "checkmato_data"
+  destination = "/tmp/checkmato_jobs"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 4
+    soft_limit = 2
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "get"
+    path = "/api/health"
+    timeout = "5s"
