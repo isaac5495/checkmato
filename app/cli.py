@@ -6,10 +6,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import checks
+from .byos import (apply_byos, footnote_audit, write_audit,
+                   write_corrections)
 from .corpus import Corpus
 from .enrich import classify_prose, enrich, mark_narrative
 from .extract import extract_claims, read_doc
 from .judge import judge
+from .library import Library, check_manifest
 from .llm import LLM, extract_semantic_claims
 from .names import AliasMap
 from .report import write_jsonl, write_md, write_xlsx
@@ -30,13 +33,14 @@ def _run_stats(doc, corpus, claims):
 
 def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=False,
         max_search=60, whitelist=None, fx_rates=None, names=None, cfg=None,
-        progress=None, cancel=None, backend="auto"):
+        progress=None, cancel=None, backend="deepseek", library=None,
+        sources_only=False, footnotes=False):
     _p = progress or (lambda e: None)
     cancelled_midrun = False
     from . import config as _cfg
     from . import estimate as est
     from . import llm as llm_mod
-    from .textproc import detect_entities
+    from .textproc import detect_cjk_entities, detect_entities
     cfg = cfg or _cfg.load()
     import corpus as _corpus_mod
     _corpus_mod.VERBATIM_CUT = cfg["quote_verbatim_cut"]
@@ -46,8 +50,21 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     from .textproc import count_words as _cw
     _p({"stage": "parse", "words": _cw(doc["paragraphs"]),
         "paras": len(doc["paragraphs"])})
-    corpus = Corpus(corpus_dir, aliases=alias)
-    _p({"stage": "corpus", "files": len(corpus.files), "lines": len(corpus)})
+    lib = None
+    mode = "web_only"
+    if library:
+        lib = Library(library)
+        corpus = lib.corpus
+        if alias and getattr(alias, "groups", None):
+            corpus.aliases = alias
+        mode = "sources_only" if sources_only else "sources_then_web"
+    else:
+        corpus = Corpus(corpus_dir, aliases=alias)
+    if sources_only:
+        use_web = False  # a promise, not a default: no network in this mode
+        use_llm = False  # the LLM is a network call; sources_only is offline
+    _p({"stage": "corpus", "files": len(corpus.files), "lines": len(corpus),
+        "mode": mode})
     llm = LLM(max_calls=cfg["llm_max_calls"], max_tokens=cfg["llm_max_tokens"],
               max_seconds=cfg["llm_max_seconds"]) if use_llm else None
     claims = extract_claims(doc["paragraphs"])
@@ -75,7 +92,23 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
             if not any(c["raw"].lower() in x["sentence"].lower() and
                        c["type"] == x["type"] for x in claims[:base]):
                 claims.append(c)
+    from .normalize import query_text
+    _subject = (context or {}).get("subject") or ""
+    _groups = [g for g, _ts in alias.groups]
+    doc_entities = detect_entities(doc["paragraphs"], max_n=50)
+    # Chinese has no capitalisation: add suffix-anchored org names from the
+    # draft AND the library, so a claim about 恒宇健康 can see that the source
+    # line names 恒宇科技 instead of treating both as the shared 恒宇 bigram.
+    lib_texts = [row[2] for row in corpus.lines]
+    for ent in detect_cjk_entities(list(doc["paragraphs"]) + lib_texts):
+        if ent not in doc_entities:
+            doc_entities.append(ent)
+    for c in claims:
+        c["_query"] = query_text(c.get("sentence") or "", _subject, _groups)
+        c["_doc_entities"] = doc_entities
     judge(claims, corpus, progress=_p)
+    if lib:
+        apply_byos(claims, lib, mode)
     # citation text (footnote/endnote paragraphs) is the SOURCE, not a claim:
     # fact-checking a citation against the web is out of scope and wastes the
     # search budget — only URLs inside them get liveness-probed
@@ -84,13 +117,20 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     for c in claims:
         if c.get("para") in cite_idx:
             c["citation"] = True
+            if c["type"] != "url":
+                # rule 4: footnote text is the SOURCE, not a claim. Judging a
+                # citation's own year against the library invents pending items.
+                c["verdict"] = "narrative"
+                c["confidence"] = "n/a"
+                c["suggestion"] = ("Citation text is the source, not a claim — "
+                                   "kept visible for transparency.")
     # mark stated conversions BEFORE any searching, so the converted figure is
     # never web-judged out of context (see fx.tag_conversions)
     from .fx import tag_conversions
     tag_conversions(claims)
     # eligibility (deterministic floor first: no LLM needed): headings and
     # questions assert nothing checkable — a human checker never opens them
-    mark_narrative(claims)
+    mark_narrative(claims, doc.get("heading_paras") or ())
     # budgets SCALE with the document's actual needs — a 6800-word case study
     # gets the same rigor per paragraph as a 200-word blurb, just more time
     budgets = est.scaled_budgets(_run_stats(doc, corpus, claims),
@@ -123,7 +163,7 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
                                if grp[0] not in entities]
     timelines = checks.entity_timelines(doc["paragraphs"], entities)
     web = None
-    if use_web or (llm and llm.available):
+    if not sources_only and (use_web or (llm and llm.available)):
         pairs = []
         if context:
             s = str(context.get("subject") or "").strip()
@@ -139,12 +179,11 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
             WebBudget(budgets["max_search"], budgets["web_max_seconds"],
                       budgets["max_pages"]),
             site_whitelist=whitelist or [], entities=entities,
-            searxng_url=cfg.get("searxng_url"),
-            searxng_engines=cfg.get("searxng_engines"),
             entity_pairs=pairs, doc_paras=doc["paragraphs"],
             backends=backend)
     if web:
-        enrich(claims, web, llm, progress=_p, context=context, cancel=cancel)
+        enrich(claims, web, llm, progress=_p, context=context, cancel=cancel,
+               corpus=corpus)
     if cancel and cancel():
         cancelled_midrun = True
         for c in claims:
@@ -156,6 +195,9 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     structural = checks.structural_findings(doc, claims)
     drift = checks.name_drift(doc["paragraphs"], alias)
     findings = _order(structural + checks.timeline_conflicts(timelines) + drift + claims)
+    for x in findings:
+        x["_mode"] = mode
+    fn_rows = footnote_audit(doc, lib) if (lib and footnotes) else []
     anchored = [x for x in findings if x.get("para") is not None]
     anchor_ok = sum(1 for x in anchored if x.get("anchored"))
 
@@ -163,12 +205,17 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         "doc": Path(doc_path).name,
         "paragraphs": doc["paragraphs"],
         "run": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "engine": _engine_label(use_web, llm, web),
+        "engine": _engine_label(use_web, llm, web, lib=lib, mode=mode),
         "words": _word_count(doc["paragraphs"]),
         "paras": len(doc["paragraphs"]),
         "lang": detect_language(doc["paragraphs"]),
         "corpus_files": len(corpus.files),
         "corpus_lines": len(corpus),
+        "mode": mode,
+        "byos_library": str(lib.path) if lib else "",
+        "byos_sources": len(lib.sources) if lib else 0,
+        "byos_no_text_layer": len(lib.no_text_layer) if lib else 0,
+        "footnotes_audited": len(fn_rows),
         "web_searches_used": web.budget.used if web else 0,
         "web_search_budget": web.budget.max if web else 0,
         "web_pages_read": web.budget.used_pages if web else 0,
@@ -189,6 +236,8 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         "anchor_total": len(anchored),
         "anchor_ok": anchor_ok,
         "llm_calls": llm.calls if llm else 0,
+        "llm_provider": llm.provider if llm else "",
+        "llm_relay_fallbacks": llm.relay_fallbacks if llm else 0,
         "cancelled": bool(cancelled_midrun or (cancel and cancel())),
     }
     out = Path(out_dir)
@@ -197,6 +246,10 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     write_jsonl(findings, out / "claims.jsonl")
     write_md(meta, findings, out / "report.md")
     write_xlsx(meta, findings, out / "report.xlsx")
+    if lib and footnotes:
+        write_audit(fn_rows, out / "audit.md")
+    if lib:
+        write_corrections(findings, out / "corrections.md")
     from .annotate import annotate_docx, annotate_md
     try:
         if Path(doc_path).suffix.lower() == ".docx":
@@ -217,22 +270,17 @@ def _word_count(paragraphs):
 def _backends(web):
     if not web:
         return "off"
-    from .web import DDGS
-    names = (["ddgs"] if DDGS is not None else []) + \
-            (["searxng"] if web.searxng else []) + \
-            (["wikipedia"] if getattr(web, "wikipedia", None) else []) + \
-            (["google-cse"] if getattr(web, "cse", None) and web.cse.usable else []) + \
-            (["brave"] if getattr(web, "brave", None) and web.brave.usable else [])
-    only = getattr(web, "only", "auto")
-    if only not in ("", "auto"):  # the user picked an engine: the report
-        names = [n for n in names
-                 if n in (only, "wikipedia")]  # says what ran, period
-    return "+".join(names) or "none"
+    only = getattr(web, "only", "deepseek")
+    usable = {"deepseek": getattr(web, "deepseek", None) and web.deepseek.usable,
+              "brave": getattr(web, "brave", None) and web.brave.usable}
+    return only if usable.get(only) else "none"
 
 
-def _engine_label(use_web, llm, web=None):
+def _engine_label(use_web, llm, web=None, lib=None, mode="web_only"):
     parts = ["M0.5 (deterministic: extraction + BYOS grep + structural)"]
-    if use_web or web:
+    if lib:
+        parts.append(f"+ BYOS ({len(lib.sources)} sources, {mode})")
+    elif use_web or web:
         parts.append(f"+ free web ({_backends(web)})")
     if llm and llm.available:
         parts.append("+ LLM (free tier)")
@@ -247,27 +295,121 @@ def _order(findings):
     return sorted(findings, key=lambda x: (rank.get(x["verdict"], 9), x["id"]))
 
 
+def _main_library(argv):
+    ap = argparse.ArgumentParser(prog="checkmato library")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    pi = sub.add_parser("index", help="build/refresh a library manifest")
+    pi.add_argument("dir")
+    pi.add_argument("--out", required=True)
+    pc = sub.add_parser("check", help="verify a manifest against disk")
+    pc.add_argument("manifest")
+    pim = sub.add_parser("import", help="add an externally converted scan")
+    pim.add_argument("library")
+    pim.add_argument("file")
+    pim.add_argument("--derived-from", required=True,
+                     help="the original PDF this text was converted from")
+    pim.add_argument("--out", default=None, help="manifest path to update")
+    a = ap.parse_args(argv)
+    if a.cmd == "index":
+        lib = Library(a.dir)
+        path = lib.write_manifest(a.out)
+        print(f"sources={len(lib.sources)} lines={len(lib.corpus)}")
+        print(f"manifest={path}")
+        if lib.no_text_layer:
+            print(f"no_text_layer={len(lib.no_text_layer)} "
+                  "(convert externally, then re-import)")
+        return 0
+    if a.cmd == "import":
+        lib = Library(a.library)
+        src = lib.import_converted(a.file, a.derived_from, a.out)
+        print(f"imported={src['id']} derived_from={src['derived_from']}")
+        print(f"manifest={lib.manifest_path}")
+        return 0
+    info, _lib = check_manifest(a.manifest)
+    print(f"present={info['present']} missing={len(info['missing'])}")
+    for m in info["missing"]:
+        print(f"  missing: {m}")
+    return 0 if not info["missing"] else 1
+
+
+def _main_glossary(argv):
+    ap = argparse.ArgumentParser(prog="checkmato glossary")
+    ap.add_argument("draft", help="path to the draft document")
+    ap.add_argument("--library", required=True, help="library folder or manifest")
+    ap.add_argument("--out", default="glossary.csv")
+    ap.add_argument("--glossary-llm", action="store_true",
+                    help="let the configured model PROPOSE pairs (optional)")
+    a = ap.parse_args(argv)
+    from .glossary_build import build
+    doc = read_doc(a.draft)
+    lib = Library(a.library)
+    corpus_text = "\n".join(ln[2] for ln in lib.corpus.lines)
+    llm = None
+    if a.glossary_llm:
+        llm = LLM(max_calls=2, max_tokens=8000, max_seconds=120)
+    g, stats = build(doc["raw_text"], corpus_text, llm=llm,
+                     use_llm=a.glossary_llm)
+    g.save(a.out)
+    st = stats["states"]
+    print(f"pairs={len(g.rows)} verified={st.get('verified', 0)} "
+          f"retrieval_only={st.get('retrieval_only', 0)} "
+          f"unverified={st.get('proposed_unverified', 0)} "
+          f"llm={stats['llm_used']}")
+    print(f"out={a.out}")
+    return 0
+
+
+def _main_analyze(argv):
+    ap = argparse.ArgumentParser(prog="checkmato analyze")
+    ap.add_argument("claims", help="claims.jsonl from a BYOS run")
+    ap.add_argument("--library", required=True, help="library folder or manifest")
+    ap.add_argument("--out", required=True, help="report.docx path")
+    a = ap.parse_args(argv)
+    from .analysis import analyze, write_markdown, write_report
+    rows, lib, groups, counts = analyze(a.claims, a.library)
+    write_report(rows, lib, groups, counts, a.out)
+    md = write_markdown(rows, lib, groups, counts,
+                        Path(a.out).with_suffix(".md"))
+    print("counts:", dict(counts))
+    print(f"docx={a.out}")
+    print(f"md={md}")
+    return 0
+
+
 def main(argv=None):
     logging.basicConfig(level=os.environ.get("CHECKMATO_LOG", "WARNING").upper(),
                         format="%(levelname)s %(name)s: %(message)s")
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "diff":
         return _main_diff(argv[1:])
+    if argv and argv[0] == "library":
+        return _main_library(argv[1:])
+    if argv and argv[0] == "glossary":
+        return _main_glossary(argv[1:])
+    if argv and argv[0] == "analyze":
+        return _main_analyze(argv[1:])
     ap = argparse.ArgumentParser(
         prog="checkmato",
         description="CheckMato M0.5 — fact-check pipeline for documents.")
     ap.add_argument("doc", help="path to .md/.txt/.docx document to check")
     ap.add_argument("--corpus", help="BYOS directory of source files (.md/.txt/.csv/.pdf/.docx)")
+    ap.add_argument("--library", help="BYOS library folder or library.toml")
+    ap.add_argument("--sources-only", action="store_true",
+                    help="never touch the network; claims without a source are no_source")
+    ap.add_argument("--footnotes", action="store_true",
+                    help="audit each footnote against the source it cites")
     ap.add_argument("--out", default="reports", help="output directory")
     ap.add_argument("--web", action="store_true",
-                    help="enable free keyless web search (ddgs) for unverified claims")
+                    help="enable web search (DeepSeek Search by default)")
     ap.add_argument("--llm", action="store_true",
                     help="enable LLM assistance (needs GEMINI_/GROQ_/OPENAI_ API key)")
     ap.add_argument("--max-search", type=int, default=None, help="search budget per run")
     ap.add_argument("--whitelist", default="",
                     help="comma-separated authoritative sites, e.g. reuters.com,gov.cn")
-    ap.add_argument("--backend", default="auto", choices=("auto", "brave", "ddgs"),
-                    help="search engine choice: auto (chain), brave, or ddgs")
+    ap.add_argument("--backend", default="deepseek",
+                    choices=("deepseek", "brave"),
+                    help="search engine: deepseek (default, DEEPSEEK_API_KEY) "
+                         "or brave (BRAVEX_API_KEY)")
     ap.add_argument("--names", default=None,
                     help="alias/name-equivalence file (CSV 'en,zh' or 'A = B' lines)")
     ap.add_argument("--config", default="checkmato.toml",
@@ -305,7 +447,9 @@ def main(argv=None):
                          max_search=a.max_search or cfg["max_search"],
                          whitelist=([w.strip() for w in a.whitelist.split(",") if w.strip()]
                                     or cfg["whitelist"]),
-                          names=a.names, cfg=cfg, backend=a.backend)
+                          names=a.names, cfg=cfg, backend=a.backend,
+                          library=a.library, sources_only=a.sources_only,
+                          footnotes=a.footnotes)
     counts = {}
     for x in findings:
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
@@ -319,6 +463,13 @@ def main(argv=None):
         print(f"  name drift     {meta['name_drift']}")
     if meta.get("alias_groups"):
         print(f"  alias groups   {meta['alias_groups']}")
+    if meta.get("byos_sources"):
+        print(f"  byos sources   {meta['byos_sources']} "
+              f"({meta['corpus_lines']} lines, mode {meta['mode']})")
+    if meta.get("footnotes_audited"):
+        print(f"  footnotes      {meta['footnotes_audited']} audited -> audit.md")
+    if meta["mode"] == "sources_only":
+        print("  web: off (sources_only)")
     if meta.get("web_searches_used"):
         print(f"  web searches: {meta['web_searches_used']}/{meta['web_search_budget']}"
               + ("  [BUDGET EXHAUSTED — remaining web items not checked]"

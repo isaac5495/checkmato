@@ -5,8 +5,10 @@ ERR_CONNECTION_REFUSED whenever either window closed; this mode needs only:
     .venv\\Scripts\\python.exe -m uvicorn app.server:app --port 8000
 """
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -23,9 +25,16 @@ def main():
     if not out_dir.exists():
         print("SKIP: web/out missing — run `npm run build` in web/ first")
         return 1
+    # Point the child server at a THROWAWAY quota store. Without this the gate
+    # reads the developer's real .quota.json and starts failing with HTTP 429
+    # purely because the app was exercised 25 times that day -- a test that
+    # depends on how much the dev used the tool is not a gate, it is a
+    # tripwire. The quota logic itself is covered hermetically in test_units.
+    quota_store = Path(tempfile.gettempdir()) / f"checkmato_test_quota_{os.getpid()}.json"
+    env = dict(os.environ, CHECKMATO_QUOTA_PATH=str(quota_store))
     proc = subprocess.Popen([PY, "-X", "utf8", "-m", "uvicorn", "app.server:app",
                              "--port", str(PORT), "--host", "127.0.0.1"],
-                            cwd=ROOT, stdout=subprocess.DEVNULL,
+                            cwd=ROOT, env=env, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)
     try:
         for _ in range(30):
@@ -62,6 +71,7 @@ def main():
     finally:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                        capture_output=True)
+        quota_store.unlink(missing_ok=True)
     ok = all(v for _, v in checks)
     for name, v in checks:
         print(f"  [{'PASS' if v else 'FAIL'}] {name}")

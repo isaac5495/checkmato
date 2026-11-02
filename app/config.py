@@ -23,9 +23,15 @@ DEFAULTS = {
     "llm_max_seconds": 270,
     "web_max_seconds": 240,
     "max_pages": 16,              # deep-read full-page fetches per run
-    "searxng_url": "",            # e.g. http://127.0.0.1:8080 (or env SEARXNG_URL)
-    "searxng_engines": "",        # optional: "google,bing,duckduckgo"
     # §9 free-first quotas — limits are budgets, never paywalls
+    # These per-day counters guard ONE thing: strangers sharing a hosted
+    # instance, so a single visitor cannot burn the operator's shared free-tier
+    # keys. They are meaningless for the packaged desktop app, where the user
+    # owns the machine, the IP and the keys -- there is nobody to protect the
+    # quota from, so the cap is pure friction. Set enforce_ip_quota = false in
+    # a desktop build; the per-document max_words sanity cap still applies,
+    # because refusing a 10MB file is about the machine, not the quota.
+    "enforce_ip_quota": True,        # False = desktop/app build: no per-day caps
     "quota_ip_per_day": 1,          # guest (no account): 1 doc/day/IP
     "max_words": 10_000,            # per document (guest tier cap)
     "max_words_per_day": 60_000,    # per IP/day aggregate
@@ -44,6 +50,4 @@ def load(path=None):
                             if k in DEFAULTS})
         except Exception as e:
             log.warning("could not parse %s — using defaults: %s", path, e)
-    if not cfg.get("searxng_url"):
-        cfg["searxng_url"] = os.environ.get("SEARXNG_URL", "")
     return cfg

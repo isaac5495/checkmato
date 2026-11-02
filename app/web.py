@@ -1,7 +1,12 @@
-"""Free web evidence module (keyless).
+"""Web evidence module: DeepSeek Search (default) or Brave.
 
-Backends: ddgs (DuckDuckGo, no key) first, then optional self-hosted SearXNG
-(SEARXNG_URL / checkmato.toml) which aggregates Google/Bing/DDG keylessly.
+DeepSeek Search (`POST /v1/tools/search`) is DeepSeek's in-house index, billed
+per successful request and returning structured results with a long `summary`
+and an authority tier. Brave remains an explicit option for its monthly free
+credit. There is no auto chain and no keyless fallback: the selected engine is
+the only one that runs, and an unavailable engine is reported, never silently
+replaced.
+
 Everything is conservative: snippets must literally contain the asserted
 wording/value or the verdict stays `unverified`. Three hard budgets so a run
 can never crawl: search COUNT, page-fetch COUNT (deep-read), and wall-clock
@@ -22,17 +27,17 @@ from . import corpus as corp
 from . import textproc as tp
 
 UA = "Mozilla/5.0 (compatible; CheckMato/0.1; fact-check research)"
-SEARCH_TIMEOUT = 5  # seconds per ddgs query (fail fast; budget degrades honestly)
+SEARCH_TIMEOUT = 8  # seconds per search request (fail fast; budget degrades)
 PAGE_TIMEOUT = 6  # seconds per full-page deep-read
 PAGE_MAX_BYTES = 400_000
-# hard wall-clock caps PER CALL: ddgs' own timeout covers socket ops but NOT
-# its internal multi-engine retry loop — a half-open h2 connection could hold
+# hard wall-clock caps PER CALL: a search client's own timeout covers socket
+# ops but NOT its internal retry loop — a half-open h2 connection could hold
 # a worker hostage for an hour (observed: run frozen at deep check 10-20).
 # Timeouts must kill the WAIT, not merely the socket.
 SEARCH_DEADLINE = int(os.environ.get("CHECKMATO_SEARCH_DEADLINE", "25"))
 PAGE_DEADLINE = int(os.environ.get("CHECKMATO_PAGE_DEADLINE", "25"))
-# min seconds between ANY two searches (all workers): ~85/min keeps ddgs and
-# the SearXNG surrogates below their burst-detection thresholds
+# min seconds between ANY two searches (all workers), a courtesy pace that
+# keeps the keyed APIs well inside their per-account QPS limits.
 SEARCH_PACE_S = float(os.environ.get("CHECKMATO_SEARCH_PACE", "0.7"))
 
 
@@ -55,64 +60,6 @@ def _call_capped(fn, seconds):
     if "err" in box:
         raise box["err"]
     return box.get("out")
-
-try:
-    from ddgs import DDGS  # newer package name
-except ImportError:
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        DDGS = None
-
-
-def _new_ddgs():
-    try:
-        return DDGS(timeout=SEARCH_TIMEOUT)
-    except TypeError:  # older signature without timeout kwarg
-        return DDGS()
-
-
-class SearXNG:
-    """Optional second live backend: a SELF-INSTALLED SearXNG container
-    (keyless, $0). Results are normalized to the ddgs schema (href/title/body).
-    Raises on any failure — WebEvidence decides degraded vs noresults."""
-
-    def __init__(self, base_url, timeout=4, engines=""):
-        from . import state
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.engines = engines
-        self.fail_streak = 0
-        # a container that was down <15 min ago stays marked down on restart,
-        # so a fresh process doesn't re-pay the timeout on every single query
-        self.disabled = state.tripped("searxng")
-
-    def text(self, query, max_results=6):
-        from urllib.parse import urlencode
-        params = {"q": query, "format": "json", "categories": "general"}
-        # a CJK query without locale/region gets geo-poisoned by the surrogates
-        # (this box's IP resolves Bing/DDG to random APAC datacenters ->
-        # YouTube/google.co.th garbage). Ask for China-region Chinese results.
-        if any("\u4e00" <= ch <= "\u9fff" for ch in query):
-            params["locale"] = "zh-CN"
-            params["region"] = "cn-zh"
-        else:
-            params["region"] = "wt-wt"  # world-neutral: never let the IP pick
-        if self.engines:
-            params["engines"] = self.engines
-        req = urllib.request.Request(
-            f"{self.base_url}/search?{urlencode(params)}",
-            headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            data = json.load(r)
-        out = []
-        for item in (data.get("results") or [])[:max_results]:
-            out.append({"title": item.get("title") or "",
-                        "href": item.get("url") or "",
-                        "body": item.get("content") or ""})
-        self.fail_streak = 0
-        return out
-
 
 class WebBudget:
     def __init__(self, max_searches=60, max_seconds=90, max_pages=8,
@@ -160,51 +107,6 @@ class WebBudget:
     @property
     def exhausted(self):
         return self.used >= self.max or self.spent_time()
-
-
-class GoogleCSE:
-    """OFFICIAL Google Custom Search JSON API: 100 queries/day FREE (API key,
-    no card; GOOGLE_CSE_KEY + GOOGLE_CSE_ID in .env). When configured this is
-    the same index a human types into — it lifts the keyless surrogate scraping
-    (DDG/Bing geo-CAPTCHA storms, the 'too many unverified' cause) entirely.
-    Optional: no keys -> behavior unchanged, everything still works."""
-
-    URL = "https://www.googleapis.com/customsearch/v1"
-
-    def __init__(self, timeout=8):
-        self.timeout = timeout
-
-    @property
-    def key(self):
-        return os.environ.get("GOOGLE_CSE_KEY")
-
-    @property
-    def cx(self):
-        return os.environ.get("GOOGLE_CSE_ID")
-
-    @property
-    def usable(self):
-        return bool(self.key and self.cx)
-
-    def text(self, query, max_results=6):
-        from urllib.parse import urlencode
-        params = {"key": self.key, "cx": self.cx, "q": query,
-                  "num": min(10, max_results)}
-        if any("\u4e00" <= ch <= "\u9fff" for ch in query):
-            params["hl"] = "zh-CN"
-            params["cr"] = "countryCN"
-        req = urllib.request.Request(f"{self.URL}?{urlencode(params)}",
-                                     headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            data = json.load(r)
-        if data.get("error"):
-            raise RuntimeError(f"CSE: {str(data['error'].get('message'))[:80]}")
-        out = []
-        for it in data.get("items") or []:
-            out.append({"title": it.get("title") or "",
-                        "href": it.get("link") or "",
-                        "body": it.get("snippet") or ""})
-        return out
 
 
 class BraveSearch:
@@ -264,72 +166,57 @@ class BraveSearch:
         return out
 
 
-class WikipediaAPI:
-    """Third keyless backend: the MediaWiki search API. It cannot be CAPTCHA'd
-    the way search-engine surrogates can, and for people/companies it is often
-    the ONLY fast source carrying the actual dated facts (求伯君 / Qiu Bojun has
-    a zh AND an en article). Results come back tier-tagged open-community by the
-    existing _tier() rule, so a lone Wikipedia 'support' always says so."""
+class DeepSeekSearch:
+    """DeepSeek Search API (POST /v1/tools/search): DeepSeek's in-house index,
+    bearer-key auth, returns structured results with a 600-800 char summary
+    meant for a model to read. DEEPSEEK_API_KEY enables it; absent = chain
+    unchanged.
 
-    LANGS = {"en": "https://en.wikipedia.org/w/api.php",
-             "zh": "https://zh.wikipedia.org/w/api.php"}
+    Billing is per SUCCESSFUL request (empty result sets are not billed), so an
+    empty set is genuinely free to fall through. `summary` is used as the body,
+    not `snippet`: this engine judges figures against passages, and the 100-200
+    char snippet is exactly the text that drops the qualifying clause.
+    """
 
-    def text(self, query, max_results=6, entities=()):
-        # MediaWiki ANDs every term — long keyword soup returns zero. The
-        # human move is to SEARCH LESS: strip quote punctuation and cap the
-        # query at the first few meaningful terms.
-        q = re.sub(r"[\"'()]+", " ", query)
-        terms = [w for w in q.split() if len(w.strip(".,;:")) > 1][:6]
-        if not terms:
-            return []
-        joined = " ".join(terms)
-        is_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in joined)
-        lang = "zh" if is_cjk else "en"
-        out = self._api_search(lang, joined, max_results)
-        if not out and len(terms) > 3:
-            # human move when an AND-search returns nothing: REMOVE words.
-            # Keep the head terms (entity + figure), drop the specific tail.
-            out = self._api_search(lang, " ".join(terms[:3]), max_results)
-        if is_cjk:
-            # zh.wiki search RANKS (OR-style) for CJK — rare detail words
-            # ('三天三夜') pollute results with unrelated articles. The human
-            # move for a rare fact: go to the SUBJECT'S OWN article and read.
-            # So a CJK query becomes an entity query; the full-page passage
-            # reader (narrative_passages / read_evidence) checks the detail.
-            entl = [str(e) for e in entities if e]
-            hits = [t for t in terms
-                    if any(e in t or t in e for e in entl if len(t) > 1)]
-            eq = " ".join(dict.fromkeys(hits))[:80]
-            got = self._api_search(lang, eq, max_results) if len(eq) > 3 else []
-            if got:
-                return got
-            # no entity term in the query at all: fall back to a trimmed AND
-            out = out or self._api_search(lang, " ".join(terms[:3]), max_results)
-        return out
+    URL = "https://api.deepseek.com/v1/tools/search"
 
-    def _api_search(self, lang, query, max_results):
-        from urllib.parse import urlencode
-        params = {"action": "query", "list": "search", "srsearch": query,
-                  "srlimit": max_results, "srprop": "snippet",
-                  "format": "json", "utf8": "1"}
-        req = urllib.request.Request(f"{self.LANGS[lang]}?{urlencode(params)}",
-                                     headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=SEARCH_TIMEOUT) as r:
+    @property
+    def key(self):
+        return os.environ.get("DEEPSEEK_API_KEY")
+
+    @property
+    def usable(self):
+        return bool(self.key)
+
+    def text(self, query, max_results=6):
+        body = json.dumps({"query": query,
+                           "count": max(1, min(10, max_results)),
+                           "need_content": False}).encode()
+        req = urllib.request.Request(
+            self.URL, data=body,
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json",
+                     "Authorization": f"Bearer {self.key}",
+                     "User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=10) as r:
             data = json.load(r)
         out = []
-        for hit in (data.get("query", {}).get("search") or []):
-            title = hit.get("title") or ""
-            snippet = html.unescape(re.sub(r"<[^>]+>", "", hit.get("snippet") or ""))
-            slug = urllib.parse.quote(title.replace(" ", "_"))
-            out.append({"title": title, "href": f"https://{lang}.wikipedia.org/wiki/{slug}",
-                        "body": snippet})
+        for it in data.get("results") or []:
+            text = it.get("summary") or it.get("snippet") or ""
+            if not text:
+                text = it.get("content") or ""
+            href = it.get("url") or ""
+            if not href or not text:
+                continue  # a hit with no link or no text is not evidence
+            out.append({"title": it.get("title") or "",
+                        "href": href,
+                        "body": text[:900]})
         return out
 
 
 class WebEvidence:
     def __init__(self, budget=None, site_whitelist=None, entities=None,
-                 searxng_url=None, searxng_engines="", entity_pairs=None,
-                 doc_paras=None, backends="auto"):
+                 entity_pairs=None, doc_paras=None, backends="deepseek"):
         self.budget = budget or WebBudget()
         self.whitelist = site_whitelist or []
         self.raw_entities = list(entities or [])
@@ -340,34 +227,24 @@ class WebEvidence:
         allp = " ".join(tp.normalize(p) for p in self.doc_paras)
         self._lat_hits = {tp.normalize(a): allp.count(tp.normalize(a))
                           for a, _n in self.entity_pairs}
-        self.searxng = SearXNG(searxng_url, engines=searxng_engines) \
-            if searxng_url else None
-        self.wikipedia = WikipediaAPI()
-        self.cse = GoogleCSE()
         self.brave = BraveSearch()
-        # user's engine choice: auto | brave | ddgs. A selection that is not
-        # usable in this process (no key, lib missing) normalizes to auto —
-        # choosing an engine must never silently return nothing.
-        self.only = (backends or "auto").strip().lower()
+        self.deepseek = DeepSeekSearch()
+        # One selected engine, never an auto chain. If the selection has no
+        # usable key, the other keyed engine takes over; with neither key the
+        # run is honestly "web unavailable" rather than a silent fallback.
+        self.only = (backends or "deepseek").strip().lower()
+        if self.only not in ("deepseek", "brave"):
+            self.only = "deepseek"
         if self.only == "brave" and not self.brave.usable:
-            self.only = "auto"
-        elif self.only == "ddgs" and DDGS is None:
-            self.only = "auto"
-        self.available = DDGS is not None or self.searxng is not None \
-            or self.wikipedia is not None or self.cse.usable or self.brave.usable
+            self.only = "deepseek"
+        elif self.only == "deepseek" and not self.deepseek.usable:
+            self.only = "brave" if self.brave.usable else "deepseek"
+        self.available = self.brave.usable or self.deepseek.usable
         self._cache = {}
         self._pages = {}
         self._lock = threading.Lock()
         self._pool = []  # every snippet retrieved this run (for cross-claims)
-        self._local = threading.local()  # one ddgs client per worker thread
-        self.ddgs_streak = 0  # consecutive hard failures -> breaker (state.py)
 
-    def _ddgs(self):
-        c = getattr(self._local, "client", None)
-        if c is None:
-            c = _new_ddgs()
-            self._local.client = c
-        return c
 
     def _mentions_entity(self, blob):
         """A snippet is only trusted if it names one of the document's entities.
@@ -409,138 +286,26 @@ class WebEvidence:
     # ---- low-level ----
 
     def _engine_ok(self, name):
-        """Respect the user's engine choice (auto|brave|ddgs); a choice that
-        turns out unusable in this process (no key / lib missing) was already
-        normalized back to auto in __init__, so a selected engine never
-        silently returns nothing. Wikipedia's official API is a neutral,
-        on-topic source: always allowed. cse/searxng participate in auto only."""
-        if self.only in ("", "auto", None) or name in ("wikipedia", "auto"):
-            return True
+        """Only the selected engine runs. There is no auto chain and no
+        always-on keyless rung: a run uses DeepSeek Search or Brave, and the
+        report says which one actually ran."""
         return name == self.only
 
     def _backend(self, query, max_results):
-        """Keyless first (ddgs → SearXNG → Wikipedia), paid-free-tier last.
+        """One selected engine, never a chain.
 
-        Brave is ~1k queries/month: putting it first burned the month on
-        rungs keyless engines would have answered. Off-subject / empty sets
-        fall through; Brave is only called when nothing cheaper named the
-        subject AND monthly credit remains. Raises only if every available
-        backend failed."""
-        errs = []
-        # "the human tries another engine when page 1 is junk": a backend's
-        # results are only ACCEPTED if at least one snippet mentions the
-        # document's subject (geo-poisoned SERPs return YouTube/garbage that
-        # mentions nothing); off-subject sets fall through to the next backend
-        # and are kept only as last-resort fallback.
-        fallback = [None]
-
-        def _take(res):
-            if not res:
-                return None
-            if not self.entities:
-                return res  # nothing to anchor on: first set wins, as before
-            if fallback[0] is None:
-                fallback[0] = res
-            if any(self._mentions_entity((r.get("body") or "") + " "
-                                         + (r.get("title") or "")) for r in res):
-                return res
-            return None
-
-        # ddgs first, ALWAYS, even for CJK: it is the only keyless backend that
-        # indexes news articles (163/caixin/yicai carry '15.68%'); the earlier
-        # 'CJK -> wikipedia first' rule was self-sabotage — it short-circuited
-        # every Chinese query into wiki snippets that never carry the numbers.
-        # Wikipedia stays the last-resort fallback below (reliable, on-topic).
-        # ddgs breaker: while DDG is storm-blocking this IP, don't burn a
-        # search slot + seconds on EVERY query to rediscover it — 6 consecutive
-        # hard failures mark it dead for 15 min (state.py persists across
-        # restarts); the first real result heals it early.
-        from . import state as _st
-        if (DDGS is not None and self._engine_ok("ddgs")
-                and not _st.tripped("ddgs")):
-            res = None
-            try:
-                # create/reuse the thread-local client HERE (on the worker
-                # thread); only the blocking call crosses into the deadline
-                # thread. If the lambda called self._ddgs() itself, every
-                # query would build a FRESH DDG session on a dying thread —
-                # rate-limited like a scraper, that blanked the results
-                client = self._ddgs()
-                # pin the SERP region: default follows the IP and this box's
-                # exit rotates through APAC datacenters (geo garbage). CJK
-                # queries want China-region results; everything else neutral.
-                cjk = any("\u4e00" <= ch <= "\u9fff" for ch in query)
-                region = "cn-zh" if cjk else "wt-wt"
-                try:
-                    res = list(_call_capped(
-                        lambda: client.text(query, max_results=max_results,
-                                            region=region),
-                        SEARCH_DEADLINE))
-                except TypeError:  # ancient lib without region kwarg
-                    res = list(_call_capped(
-                        lambda: client.text(query, max_results=max_results),
-                        SEARCH_DEADLINE))
-            except Exception as e:
-                self._local.client = None  # sick client: rebuild next query
-                self.ddgs_streak += 1
-                errs.append(e)
-            if res:
-                self.ddgs_streak = 0
-                _st.heal("ddgs")
-                got = _take(res)
-                if got is not None:
-                    return got
-            if self.ddgs_streak >= 6:
-                _st.trip("ddgs")
-        if self.searxng and not self.searxng.disabled and self._engine_ok("searxng"):
-            try:
-                res = _call_capped(
-                    lambda: self.searxng.text(query, max_results=max_results),
-                    SEARCH_DEADLINE)
-                self.searxng.fail_streak = 0
-                got = _take(res)
-                if got is not None:
-                    return got
-            except Exception as e:
-                self.searxng.fail_streak = getattr(self.searxng, "fail_streak", 0) + 1
-                if self.searxng.fail_streak >= 3:
-                    self.searxng.disabled = True  # container down: stop paying the timeout
-                    from . import state
-                    state.trip("searxng")
-                errs.append(e)
-        # Wikipedia's own API: never CAPTCHA-stormed like the surrogates, and
-        # for named people/companies it often holds the dated facts directly
-        try:
-            res = _call_capped(lambda: self.wikipedia.text(
-                query, max_results, entities=self.raw_entities), SEARCH_DEADLINE)
-            got = _take(res)
-            if got is not None:
-                return got
-        except Exception as e:
-            errs.append(e)
-        # official keys LAST: only when keyless engines named nothing on-subject.
-        if self.cse.usable and self._engine_ok("cse"):
-            try:
-                res = _call_capped(
-                    lambda: self.cse.text(query, max_results), SEARCH_DEADLINE)
-                got = _take(res)
-                if got is not None:
-                    return got
-            except Exception as e:
-                errs.append(e)
-        if self.brave.usable and self._engine_ok("brave"):
-            try:
-                res = _call_capped(
-                    lambda: self.brave.text(query, max_results), SEARCH_DEADLINE)
-                got = _take(res)
-                if got is not None:
-                    return got
-            except Exception as e:
-                errs.append(e)
-        if fallback[0] is not None:  # nothing anchored on the subject anywhere:
-            return fallback[0]      # hand back the first set, judge decides
-        if errs:
-            raise errs[0]
+        DeepSeek Search is the default (in-house index, billed per successful
+        request); Brave remains an explicit option for its monthly free credit.
+        An engine without a key is replaced at construction time by the other
+        keyed engine, so this only returns [] when NEITHER key is configured —
+        an honest "not searched", never a silent fallback to another vendor.
+        """
+        if self.only == "brave" and self.brave.usable:
+            return _call_capped(
+                lambda: self.brave.text(query, max_results), SEARCH_DEADLINE)
+        if self.only == "deepseek" and self.deepseek.usable:
+            return _call_capped(
+                lambda: self.deepseek.text(query, max_results), SEARCH_DEADLINE)
         return []
 
     def add_passage_pool(self, passages):
@@ -887,7 +652,14 @@ class WebEvidence:
     def reuse_pool(self, claim):
         """Match snippets ALREADY fetched this run (e.g. searches for sibling
         claims in the same sentence) against this claim. Same strict guards,
-        zero extra search budget — one good source can settle many assertions."""
+        zero extra search budget — one good source can settle many assertions.
+
+        SUPPORT ONLY. A snippet the engine did not search for THIS claim may
+        confirm it, but never contradict it: a press retrospective that lists
+        a dozen years (or a price list with a dozen figures) would otherwise
+        "refute" any single value by proximity. Direct searches keep the full
+        contradiction guards; reuse gives the reader a lead, not a red flag.
+        """
         if not self._pool:
             return None
         if claim["type"] == "quote":
@@ -895,7 +667,10 @@ class WebEvidence:
         if claim["type"] in ("year", "amount", "pct", "count"):
             if not self.entities:
                 return None
-            return self._assess_number(claim, self._pool, strict_contradict=True)
+            out = self._assess_number(claim, self._pool, strict_contradict=True)
+            if out and out.get("status") == "contradicted":
+                return None
+            return out
         return None
 
     def _snippet_evidence(self, res):
@@ -1123,7 +898,7 @@ class WebEvidence:
                  "precision": "snippet"} for r in res]
 
     # open/community-tier domains: fine as corroboration, weak alone for academic work
-    COMMUNITY_DOMAINS = ("wikipedia.org", "baike.baidu.com", "quora.com", "reddit.com",
+    COMMUNITY_DOMAINS = ("wikipedia.org", "wikidata.org", "baike.baidu.com", "quora.com", "reddit.com",
                          "fandom.com", "blogspot.", "medium.com", "pinterest.")
 
     @classmethod

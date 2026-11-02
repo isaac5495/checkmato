@@ -4,6 +4,8 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from . import provenance
+
 FILLS = {
     "supported": "C6EFCE",
     "contradicted": "FFC7CE",
@@ -26,6 +28,15 @@ VERDICT_ORDER = ["contradicted", "internal_conflict", "misattributed",
 
 def to_record(x):
     """Serialize a finding to the PRD §7 contract (dev + report + eval)."""
+    # the explanation is copied, field by field, so a record is a snapshot: it
+    # cannot be changed later through the finding, and it carries only the keys
+    # the renderer knows how to draw.
+    ex_raw = x.get("explain") or {}
+    explanation = {
+        "checks": [dict(c) for c in ex_raw.get("checks", [])],
+        "origin": ex_raw.get("origin", ""),
+        "assisted": bool(ex_raw.get("assisted", False)),
+    }
     return {
         "claim_id": x["id"],
         "source_span": None if x.get("para") is None else {
@@ -36,9 +47,11 @@ def to_record(x):
         "type": x["type"],
         "verdict": x["verdict"],
         "confidence": x.get("confidence", "n/a"),
+        "mode": x.get("_mode") or "",
         "evidence": x.get("evidence", []),
         "notes": x.get("suggestion") or x.get("note") or "",
         "search_suggestions": x.get("manual_checks") or [],
+        "explanation": explanation,
         "status": "pending_user_review",
         "anchored": None if x.get("para") is None else bool(x.get("anchored", False)),
     }
@@ -89,7 +102,15 @@ def _ev_lines(x):
         tag = {"local": "[LOCAL]", "web": "[WEB]", "fx": "[FX]"}.get(e["kind"], "[?]")
         side = {"support": " (supports)", "contradict": " (against)"}.get(
             e.get("side"), "")
-        out.append(f"- {tag} `{e['ref']}` — “{e['quote']}”{side}")
+        loc = ""
+        if e.get("source_id"):
+            loc += f" (source={e['source_id']}"
+            loc += f", p.{e['page']})" if e.get("page") else ")"
+        elif e.get("page"):
+            loc += f" (p.{e['page']})"
+        if e.get("page_unavailable"):
+            loc += " (page unavailable)"
+        out.append(f"- {tag} `{e['ref']}`{loc} — “{e['quote']}”{side}")
     return out
 
 
@@ -123,6 +144,15 @@ def write_md(meta, findings, path):
     lines.append(f"- {L('BYOS corpus', '自带上游语料 (BYOS)')}: {meta['corpus_files']} "
                  f"{L('files', '个文件')} / {meta['corpus_lines']} {L('lines', '行')}"
                  + ("" if meta["corpus_lines"] else f"  ({L('none — web-dependent claims unverified', '无 — 需联网的条目未核实')})"))
+    if meta.get("mode"):
+        lines.append(f"- Mode: `{meta['mode']}`"
+                     + (" — no network requests were made"
+                        if meta["mode"] == "sources_only" else ""))
+    if meta.get("byos_sources"):
+        lines.append(f"- BYOS library: {meta['byos_sources']} sources"
+                     + (f"; {meta['byos_no_text_layer']} with no text layer "
+                        "(convert externally before trusting a miss)"
+                        if meta.get("byos_no_text_layer") else ""))
     if meta.get("web_search_budget"):
         ents = ", ".join(meta.get("web_entities") or []) or L("none detected", "未检测到")
         lines.append(f"- {L('Web', '联网检索')}: {meta.get('web_searches_used', 0)}/{meta['web_search_budget']} "
@@ -140,6 +170,16 @@ def write_md(meta, findings, path):
                          f"{L('web budget reached; remaining web items were not checked this run.', '联网额度已用尽；本轮未核查依赖联网的条目。')}")
     if meta.get("llm_calls"):
         lines.append(f"- {L('LLM assistance', 'LLM 辅助')}: {meta['llm_calls']} {L('calls (free tier); LLM only judges quoted snippets, never invents verdicts.', '次调用（免费额度）；LLM 仅对引用原文判断，绝不臆造结论。')}")
+    # Which host actually served the calls. Surfaced because the primary Agnes
+    # host is a personal relay: if it lapsed mid-run the reader should see that
+    # rather than assume every judgement came from the usual endpoint.
+    if meta.get("llm_provider"):
+        _prov = f"{meta['llm_provider']}"
+        _fb = meta.get("llm_relay_fallbacks") or 0
+        if _fb:
+            _prov += L(f"  (relay failed {_fb}x this run; the official host took over)",
+                       f"（本轮中继失败 {_fb} 次，已改用官方接口）")
+        lines.append(f"- {L('LLM provider', 'LLM 提供方')}: {_prov}")
     counts = {}
     for x in findings:
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
@@ -172,6 +212,14 @@ def write_md(meta, findings, path):
             lines.append(f"- **{L('Confidence', '置信度')}:** {x.get('confidence', 'n/a')}")
             if x.get("suggestion"):
                 lines.append(f"- **{L('Suggestion', '建议')}:** {x['suggestion']}")
+            if x.get("manual_checks"):
+                lines.append(
+                    f"- **{L('Search yourself', '自行搜索')}:** "
+                    + "  |  ".join(f"`{q}`" for q in x["manual_checks"]))
+            _pl = provenance.render_md(provenance.explain(x, zh), zh)
+            if len(_pl) > 1:
+                lines.append("")
+                lines.extend(_pl)
             if x.get("user_status"):
                 lines.append(f"- **{L('User decision', '用户裁决')}:** {x['user_status']}")
             ev = _ev_lines(x)
@@ -202,7 +250,7 @@ def write_xlsx(meta, findings, path):
     ws = wb.active
     ws.title = "Report"
     headers = ["No.", "Type", "Anchor", "Claim", "Verdict", "Confidence",
-               "Evidence (file:line)", "Suggestion", "Status"]
+               "Evidence (file:line)", "Why (checks run)", "Suggestion", "Status"]
     ws.append(headers)
     for c in ws[1]:
         c.fill = PatternFill("solid", fgColor="1F4E78")
@@ -213,12 +261,13 @@ def write_xlsx(meta, findings, path):
             x["id"], x["type"],
             f"¶{x['para'] + 1}" if x.get("para") is not None else "—",
             x["raw"], x["verdict"], x.get("confidence", "n/a"), ev,
+            provenance.render_inline(provenance.explain(x)),
             x.get("suggestion", ""), x.get("user_status") or "pending_review")])
         fill = PatternFill("solid", fgColor=FILLS.get(x["verdict"], "FFFFFF"))
         for c in ws[ws.max_row]:
             c.fill = fill
             c.alignment = Alignment(vertical="top", wrap_text=True)
-    widths = [7, 10, 7, 45, 16, 11, 55, 50, 16]
+    widths = [7, 10, 7, 45, 16, 11, 55, 60, 50, 16]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
@@ -254,6 +303,7 @@ def from_record(r):
         "evidence": r.get("evidence", []),
         "suggestion": r.get("notes", ""),
         "manual_checks": r.get("search_suggestions", []),
+        "explain": r.get("explanation", {}),
         "para": span.get("para"),
         "span": [span.get("start", 0), span.get("end", 0)],
         "anchored": r.get("anchored"),

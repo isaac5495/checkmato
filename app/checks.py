@@ -156,6 +156,32 @@ def _pct_complement(claim):
     return {tp.stem(w) for w in words}
 
 
+_MEASURE = re.compile("(" + "|".join([
+    "\u5c81", "\u540d", "\u4eba", "\u5957", "\u884c", "\u90e8", "\u53f0",
+    "\u4e2a", "\u5bb6", "\u4e07\u5143", "\u4ebf\u5143", "\u4e07", "\u4ebf",
+    "%"]) + ")")
+
+
+def _measure(raw):
+    """The unit a count is expressed in (age vs staff vs copies vs lines).
+
+    Two numbers in different units are different metrics, not a conflict.
+    """
+    m = _MEASURE.search(str(raw or ""))
+    return m.group(1) if m else ""
+
+
+def _near(sentence, raw):
+    """Content words around a number, excluding names and pure digits."""
+    i = (sentence or "").find(str(raw or ""))
+    if i < 0:
+        return set()
+    window = sentence[max(0, i - 14): i + len(str(raw)) + 10]
+    return {t for t in tp.tokens(window)
+            if len(t) > 1 and not t.isdigit() and t not in tp.STOP
+            and t not in tp.name_tokens(sentence)}
+
+
 def internal_conflicts(claims):
     """Same-kind values stated differently for the SAME fact (e.g. founding
     year given twice as 1988 and 1993). Deliberately conservative:
@@ -182,6 +208,21 @@ def internal_conflicts(claims):
             return False
         if tp.values_equal(a["value"], b["value"], kind=a["type"]):
             return False
+        # Local restatements only: a 14,000-word study repeats metrics across
+        # chapters and business lines; those are different facts, not a
+        # contradiction. Counts must also share a unit (age vs staff vs lines).
+        if a["type"] in ("count", "amount", "pct"):
+            pa, pb = a.get("para"), b.get("para")
+            if pa is not None and pb is not None and abs(pa - pb) > 3:
+                return False
+        if a["type"] == "count" and _measure(a["raw"]) != _measure(b["raw"]):
+            return False
+        if a["type"] in ("count", "amount", "pct"):
+            # Same metric, not merely the same currency: "revenue 2亿" and
+            # "cost 3.7亿" in adjacent sentences are different facts.
+            if not (_near(a["sentence"], a["raw"])
+                    & _near(b["sentence"], b["raw"])):
+                return False
         if a["type"] == "amount":
             if not a["currency"] or not b["currency"] or a["currency"] != b["currency"]:
                 return False

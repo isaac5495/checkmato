@@ -41,8 +41,25 @@ GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{model}:generateContent")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+# DeepSeek: OpenAI-compatible chat completions. Tried FIRST when keyed --
+# the user supplied this key explicitly for CheckMato runs (2026-10-27).
+# Two models are served: deepseek-flash (fast, V4.1-Flash-1017) and
+# deepseek-v4-pro. `deepseek-flash` is the default because the judge prompts
+# are short and latency-bound; override with DEEPSEEK_MODEL.
+DEEPSEEK_URL = os.environ.get(
+    "DEEPSEEK_URL", "https://api.deepseek.com/v1/chat/completions")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
 AGNES_URL = "https://apihub.agnes-ai.com/v1/chat/completions"
 AGNES_MODEL = os.environ.get("AGNES_MODEL", "agnes-2.5-flash")
+# Second Agnes host, tried BEFORE the official one (user's call: it is the
+# faster/better-quota path). It is a personal DuckDNS relay, so treat it as
+# load-bearing only while it answers: a 401/5xx/DNS failure falls straight
+# through to the official host, and the fallbacks are counted and surfaced in
+# the report rather than absorbed silently. A key is host-scoped -- the same
+# key that 401s here works on the relay, and vice versa.
+AGNES_RELAY_URL = os.environ.get(
+    "AGNES_RELAY_URL", "https://tonewapi.duckdns.org/v1/chat/completions")
+AGNES_RELAY_MODEL = os.environ.get("AGNES_RELAY_MODEL", AGNES_MODEL)
 # strict per-request socket timeout: a tarpit/half-closed connection must fail
 # in seconds, not 90s x 3 models x N claims (that was the 5-10 min hang)
 REQ_TIMEOUT = int(os.environ.get("CHECKMATO_LLM_TIMEOUT", "20"))
@@ -92,8 +109,10 @@ class LLM:
         self.key_groq = os.environ.get("GROQ_API_KEY")
         self.key_openai = os.environ.get("OPENAI_API_KEY")
         self.key_agnes = os.environ.get("AGNES_API_KEY")
-        self.key = (self.key_gemini or self.key_groq or self.key_openai
-                    or self.key_agnes)
+        self.key_agnes_relay = os.environ.get("NEW_AGNES_API_KEY")
+        self.key_deepseek = os.environ.get("DEEPSEEK_API_KEY")
+        self.key = (self.key_deepseek or self.key_gemini or self.key_groq
+                    or self.key_openai or self.key_agnes_relay or self.key_agnes)
         self.gemini_dead = False
         self.gemini_models = list(GEMINI_MODELS)
         self.calls = 0
@@ -104,6 +123,10 @@ class LLM:
         self.net_dead = False  # circuit breaker: LLM endpoint unreachable
         self._lock = threading.Lock()
         self._last_tokens = 0
+        self.provider = ""          # which host actually served the last call
+        self.relay_fallbacks = 0    # times the relay failed and Agnes took over
+        self.relay_dead = False     # breaker: stop paying a dead relay per call
+        self.relay_streak = 0       # consecutive HARD relay failures (not 429)
 
     @property
     def available(self):
@@ -145,17 +168,39 @@ class LLM:
         self.gemini_dead = True  # every model failed (retired or geo-blocked)
         return None
 
-    def _chat_openai_style(self, prompt):
+    def _openai_candidates(self):
+        """OpenAI-compatible (url, key, model, name) tries, in priority order.
+
+        A list, not a single pick: the Agnes relay is a personal host that can
+        lapse at any time, so the official host stays behind it as a live
+        fallback rather than a config edit away.
+        """
+        c = []
+        if self.key_deepseek:
+            c.append((DEEPSEEK_URL, self.key_deepseek, DEEPSEEK_MODEL,
+                      "deepseek"))
         if self.key_openai:
-            url, key, model = OPENAI_URL, self.key_openai, "gpt-4o-mini"
-        elif self.key_groq:
-            url, key, model = GROQ_URL, self.key_groq, "llama-3.3-70b-versatile"
-        elif self.key_agnes:
-            url, key, model = AGNES_URL, self.key_agnes, AGNES_MODEL
-        else:
-            return None
-        url = os.environ.get("OPENAI_BASE_URL") or url
-        model = os.environ.get("OPENAI_MODEL") or model
+            c.append((OPENAI_URL, self.key_openai, "gpt-4o-mini", "openai"))
+        if self.key_groq:
+            c.append((GROQ_URL, self.key_groq, "llama-3.3-70b-versatile", "groq"))
+        if self.key_agnes_relay and not self.relay_dead:
+            c.append((AGNES_RELAY_URL, self.key_agnes_relay, AGNES_RELAY_MODEL,
+                      "agnes-relay"))
+        if self.key_agnes:
+            c.append((AGNES_URL, self.key_agnes, AGNES_MODEL, "agnes"))
+        # `OPENAI_BASE_URL` is a full endpoint URL, not a base -- it is assigned
+        # straight to the request URL. Kept as a manual override for all slots.
+        bu = os.environ.get("OPENAI_BASE_URL")
+        bm = os.environ.get("OPENAI_MODEL")
+        if bu:
+            c = [(bu, k, bm or m, n + "*") for _, k, m, n in c]
+        return c
+
+    def _chat_openai_style(self, prompt, cand):
+        # `cand` is passed in, not re-derived from an index: the candidate list
+        # can change under us (relay breaker), and an index resolved twice
+        # would silently call the wrong host.
+        url, key, model, name = cand
         req = urllib.request.Request(
             url,
             data=json.dumps({"model": model, "temperature": 0,
@@ -166,6 +211,7 @@ class LLM:
             out = json.load(r)
         usage = out.get("usage") or {}
         self._last_tokens = int(usage.get("total_tokens") or 0)
+        self.provider = name
         return out["choices"][0]["message"]["content"]
 
     def chat(self, prompt):
@@ -199,26 +245,50 @@ class LLM:
         if not out and left() > 5:
             waits = (15, 30, 60)  # free-tier RPM windows: ride out 429s with backoff
             rate_limited, w = False, 0
-            while True:
-                try:
-                    out = _with_deadline(lambda: self._chat_openai_style(prompt),
-                                         max(5, left()))
+            cands = self._openai_candidates()
+            for cand in cands:
+                if left() <= 5:
                     break
-                except CallTimeout:
-                    out, rate_limited = None, False
-                    break  # deadlined: never re-pay the timer for the same prompt
-                except urllib.error.HTTPError as e:
-                    if (e.code == 429 and w < len(waits)
-                            and left() > waits[w] + 15):
-                        _t.sleep(waits[w])
-                        w += 1
-                        rate_limited = True
-                        continue
-                    out, rate_limited = None, e.code == 429
+                cand_429 = False
+                # a 429 is about THIS host's quota, so it must not push us onto
+                # the next candidate -- ride the window out on the same one.
+                while True:
+                    try:
+                        out = _with_deadline(
+                            lambda c=cand: self._chat_openai_style(prompt, c),
+                            max(5, left()))
+                        break
+                    except CallTimeout:
+                        out, rate_limited = None, False
+                        break  # deadlined: never re-pay the timer for the same prompt
+                    except urllib.error.HTTPError as e:
+                        if (e.code == 429 and w < len(waits)
+                                and left() > waits[w] + 15):
+                            _t.sleep(waits[w])
+                            w += 1
+                            rate_limited = True
+                            cand_429 = True
+                            continue
+                        out, rate_limited = None, e.code == 429
+                        cand_429 = e.code == 429
+                        break
+                    except Exception:
+                        out, rate_limited = None, False
+                        break
+                if out:
                     break
-                except Exception:
-                    out, rate_limited = None, False
-                    break
+                if cand[3] == "agnes-relay":
+                    with self._lock:
+                        self.relay_fallbacks += 1
+                        # A 429 means busy, not dead: fall through for this call
+                        # but do not disable the host. Hard failures (401/5xx/
+                        # DNS/timeout) three times running retire it, so a
+                        # lapsed relay costs one timeout, not one per call.
+                        if not cand_429:
+                            self.relay_streak += 1
+                            if self.relay_streak >= 3:
+                                self.relay_dead = True
+                    self.provider = "agnes"
         with self._lock:
             if out:
                 self.fail_streak = 0

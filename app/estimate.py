@@ -4,10 +4,11 @@
 Design rule: the document's needs size the budget — never a fixed time limit
 that degrades quality mid-run. Time ceilings exist only as runaway safety
 nets, derived from the plan itself (worst case), not as deadlines.
-Measured constants: keyless search ~2.6s avg across ddgs+SearXNG at 4.2
-parallel workers; deep-read ~2.5s at 4; a free-tier LLM call ~6.5s incl.
-the 3.2s rate-limit gap; each claim gets 5.6 searches by contract: keyword
-ladder (3) + planned deep queries (3, overlap with cache).
+Measured constants: DeepSeek Search ~2.6s avg at 4.2 parallel workers (the old
+keyless chain measured the same; the budget shape is unchanged); deep-read
+~2.5s at 4; a free-tier LLM call ~6.5s incl. the 3.2s rate-limit gap; each
+claim gets 5.6 searches by contract: keyword ladder (3) + planned deep queries
+(3, overlap with cache).
 """
 import math
 from pathlib import Path

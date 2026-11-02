@@ -140,14 +140,81 @@ ok(len(_real) == 1 and len(_real[0][0]) == 2,
 
 # --- official-API backends are strictly optional: no keys -> not usable,
 # and WebEvidence availability still holds via keyless backends ---
-from app.web import BraveSearch, GoogleCSE, WebEvidence as _WE, WebBudget as _WB  # noqa: E402
+from app.web import (BraveSearch, DeepSeekSearch as _DS,  # noqa: E402
+                     WebEvidence as _WE, WebBudget as _WB)
 import os as _os  # noqa: E402
-for _k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_ID", "BRAVEX_API_KEY"):
+for _k in ("GOOGLE_CSE_KEY", "GOOGLE_CSE_ID", "BRAVEX_API_KEY",
+          "DEEPSEEK_API_KEY"):
     _os.environ.pop(_k, None)
-ok(not GoogleCSE().usable and not BraveSearch().usable,
-   "no search keys configured -> official backends report unusable")
+ok(not BraveSearch().usable,
+   "no Brave key -> Brave unusable")
 _w = _WE(_WB(1))
-ok(_w.available, "keyless chain still available without any API key (the $0 rule)")
+ok(not _w.available and _w.only == "deepseek",
+   "no search key -> web honestly unavailable (no keyless fallback)")
+
+# --- DeepSeek Search: optional keyed lane, parsed at the one chokepoint ---
+import io as _io  # noqa: E402
+import json as _json  # noqa: E402
+import urllib.request as _ur  # noqa: E402
+ok(not _DS().usable and not _WE(_WB(1)).deepseek.usable,
+   "no DEEPSEEK_API_KEY -> DeepSeek lane unusable")
+
+_os.environ["DEEPSEEK_API_KEY"] = "test-key"
+try:
+    ok(_DS().usable, "DEEPSEEK_API_KEY -> DeepSeek lane usable")
+
+    class _FakeResp(_io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    _payload = {"results": [
+        {"title": "Kingsoft", "url": "https://example.com/a",
+         "snippet": "short snippet", "summary": "S" * 1200,
+         "authority": 3},
+        {"title": "no link", "url": "", "summary": "text but no URL"},
+        {"title": "no text", "url": "https://example.com/b", "summary": ""},
+    ]}
+    _seen = {}
+
+    def _fake_urlopen(req, timeout=None):
+        _seen["url"] = req.full_url
+        _seen["body"] = _json.loads(req.data.decode())
+        _seen["auth"] = req.headers.get("Authorization")
+        return _FakeResp(_json.dumps(_payload).encode())
+
+    _orig_open = _ur.urlopen
+    _ur.urlopen = _fake_urlopen
+    try:
+        _rows = _DS().text("Kingsoft founder", max_results=4)
+    finally:
+        _ur.urlopen = _orig_open
+    ok(len(_rows) == 1 and _rows[0]["href"] == "https://example.com/a",
+       "DeepSeek: hits without a URL or without text are not evidence")
+    ok(len(_rows[0]["body"]) == 900,
+       "DeepSeek: summary (not the snippet) is the body, capped at 900 chars")
+    ok(_seen["body"].get("query") == "Kingsoft founder"
+       and _seen["body"].get("count") == 4,
+       "DeepSeek: request carries query + count")
+    ok(str(_seen["auth"]).endswith("test-key"),
+       "DeepSeek: bearer auth header sent")
+finally:
+    _os.environ.pop("DEEPSEEK_API_KEY", None)
+
+# --- a supplied DeepSeek key is tried FIRST, and never mixed with another
+# host's key (the OPENAI_BASE_URL rewrite used to reuse candidate keys) ---
+from app.llm import LLM as _LLM  # noqa: E402
+_os.environ["DEEPSEEK_API_KEY"] = "test-key"
+try:
+    _cands = _LLM(max_calls=1, max_tokens=10, max_seconds=5)._openai_candidates()
+finally:
+    _os.environ.pop("DEEPSEEK_API_KEY", None)
+ok(_cands and _cands[0][3].startswith("deepseek")
+   and _cands[0][1] == "test-key"
+   and _cands[0][2] in ("deepseek-flash", "deepseek-v4-pro"),
+   "DeepSeek is the first OpenAI-compatible candidate when its key is set")
 
 
 class _StubLLM:
@@ -336,15 +403,11 @@ ok(_sug_n.get("manual_checks", [""])[0] == "求伯君 1984",
 # --- the engine choice gates the chain (and wikipedia stays neutral) ---------
 _wg = _WE(_WB(1), entities=["Kingsoft"])
 _wg.only = "brave"
-ok(_wg._engine_ok("brave") and _wg._engine_ok("wikipedia")
-   and not _wg._engine_ok("ddgs") and not _wg._engine_ok("searxng"),
-   "brave choice: brave + wikipedia only")
-_wg.only = "ddgs"
-ok(_wg._engine_ok("ddgs") and not _wg._engine_ok("brave"),
-   "ddgs choice: ddgs + wikipedia only")
-_wg.only = "auto"
-ok(all(_wg._engine_ok(n) for n in ("brave", "ddgs", "searxng", "wikipedia")),
-   "auto: the whole chain runs")
+ok(_wg._engine_ok("brave") and not _wg._engine_ok("deepseek"),
+   "brave choice: brave only")
+_wg.only = "deepseek"
+ok(_wg._engine_ok("deepseek") and not _wg._engine_ok("brave"),
+   "deepseek choice: deepseek only")
 
 # --- latin rungs never carry CJK bigram junk into a keyword query ------------
 _latin_q = _cq({"type": "year", "raw": "1946", "value": 1946.0, "para": 0,
@@ -503,6 +566,178 @@ _uv, _cf, _ev, _nt = _cn(
 ok(_uv == "unverified" and _ev == [],
    f"nearby unmatched corpus line must not be attached as evidence: {_ev}")
 
+# --- a different-MILESTONE line must not confirm, in either direction ------
+# The bug this pins: the predicate guard ran only on the contradiction path, so
+# a matching year on a line about a different event produced `supported`.
+# Non-KS subjects on purpose (generality rule: no case-study name may appear in
+# a branch). CJK is written as \u escapes so the bytes cannot be mangled by an
+# editor that guesses the encoding -- see the mojibake lesson in HANDOFF.
+import tempfile as _tf  # noqa: E402
+from pathlib import Path as _PPath  # noqa: E402
+
+_OFF_EVENT = [
+    ("Solaris Grid opened its Bergen plant in 2011.", 2011.0,
+     "Solaris Grid was founded in 2011 by two engineers."),
+    ("Vantage Press launched its colour title in 1998.", 1998.0,
+     "Vantage Press was founded in 1998."),
+    ("Orchid Labs acquired a Lima supplier in 2016.", 2016.0,
+     "Orchid Labs was founded in 2016 in Lima."),
+    ("Helio Dynamics closed its Oslo office in 2014.", 2014.0,
+     "Helio Dynamics raised 45 million in 2014."),
+]
+for _sent, _yr, _line in _OFF_EVENT:
+    _d = _PPath(_tf.mkdtemp())
+    (_d / "src.md").write_text(_line, encoding="utf-8")
+    _v, _c2, _e2, _n2 = _cn(
+        {"type": "year", "raw": str(int(_yr)), "value": _yr, "currency": None,
+         "sentence": _sent}, Corpus(str(_d)))
+    ok(_v != "supported" and _e2 == [],
+       f"a different-milestone line must not support {_sent!r} (got {_v})")
+
+# ...while a genuine same-milestone match must STILL be supported
+_d = _PPath(_tf.mkdtemp())
+(_d / "src.md").write_text("Vantage Press was founded in 1998.", encoding="utf-8")
+_v, _c2, _e2, _n2 = _cn(
+    {"type": "year", "raw": "1998", "value": 1998.0, "currency": None,
+     "sentence": "Vantage Press was founded in 1998."}, Corpus(str(_d)))
+ok(_v == "supported" and _e2 and _e2[0]["ref"] == "src.md:1",
+   f"the predicate guard must not over-tighten a real match (got {_v})")
+
+# the shared guard must ALSO hold cross-script: the ZH line announces the same
+# milestone the English claim calls "announced"
+_ce = tp.event_of(tp.normalize("WPS was announced by Kingsoft."))
+_le = tp.event_of(tp.normalize(
+    "1989\u5e74\u91d1\u5c71\u5ba3\u5e03WPS\u6b63\u5f0f\u53d1\u5e03"))
+ok(_ce == "launch" and _le == "launch",
+   f"announce/\u5ba3\u5e03 must resolve to the same milestone "
+   f"(got {_ce!r}/{_le!r})")
+
+# --- 'shares a subject' must be about a NAME, not a shared predicate --------
+# The Jev subject fallback may only be asked about lines that name the claim's
+# subject: on anaphoric evidence ("The company was founded in 2011") the model
+# has nothing to contradict and answers 0.85-0.93, i.e. confident and wrong.
+# The discriminator is that two such texts share ONLY the predicate.
+ok(tp.shares_subject("Helio was founded in 2011.",
+                     "Helio \u4e8e2011\u5e74\u6210\u7acb\u3002"),
+   "a line naming the same subject shares it, even with one token of overlap")
+ok(tp.shares_subject("Solaris Grid was founded in 2011.",
+                     "Solaris Grid \u4e8e2011\u5e74\u6210\u7acb\u3002"),
+   "the same name in both scripts is still the same subject")
+ok(tp.shares_subject(
+    "\u8fdc\u666f\u80fd\u6e90\u521b\u7acb\u4e8e1998\u5e74\u3002",
+    "1998\u5e74\u8fdc\u666f\u80fd\u6e90\u6b63\u5f0f\u6210\u7acb\u3002"),
+   "a shared CJK organisation name must be recognised")
+ok(not tp.shares_subject("Northwind Systems was founded in 2011.",
+                         "The company was founded in 2011 in Oslo."),
+   "an anaphoric line shares only the predicate -- the model must not be asked")
+ok(not tp.shares_subject("Northwind Systems was founded in 2011.",
+                         "The company was founded in 1994 in Oslo."),
+   "anaphoric + wrong year is still anaphoric")
+ok(not tp.shares_subject("Halcyon Labs was founded in 2011.",
+                         "Solaris Grid was founded in 2011 by two engineers."),
+   "two different orgs share only the predicate vocabulary")
+
+# --- verdict provenance: the checks shown must BE the checks that ran -------
+# (app/provenance.py). The point is an INVARIANT, not the wording: whatever we
+# show a user must not imply a check passed when the code rejected on it. An
+# explanation calmer than the decision is a false green in prose.
+from app import provenance as _pv  # noqa: E402
+from app import report as _rpt  # noqa: E402
+
+_BYOK = _PPath(_tf.mkdtemp())
+(_BYOK / "src.md").write_text(
+    "Solaris Grid was founded in 2011 by two engineers in Bergen.\n"
+    "Solaris Grid raised a Series B in 2019.\n"
+    "Nordvind was founded in 2011 by two engineers in Oslo.\n", encoding="utf-8")
+_BYOC = Corpus(str(_BYOK))
+
+
+def _judged(sent, yr):
+    _cl = {"type": "year", "raw": str(yr), "value": float(yr), "currency": None,
+           "sentence": sent, "id": "T1", "para": 0}
+    _v, _cf, _ev, _n = _cn(_cl, _BYOC)
+    _cl["verdict"], _cl["confidence"], _cl["suggestion"] = _v, _cf, _n
+    return _cl
+
+
+def _stat(cl, key):
+    for c in cl["explain"]["checks"]:
+        if c["key"] == key:
+            return c["status"]
+    return None
+
+
+_off = _judged("Solaris Grid opened its Bergen plant in 2011.", 2011)
+ok(_off["verdict"] == "unverified",
+   f"the figure on a different-event line stays unverified (got {_off['verdict']})")
+ok(_stat(_off, "event") == "fail",
+   "the failing check is the EVENT, and is reported as failed")
+ok(_stat(_off, "subject") == "pass" and _stat(_off, "figure") == "pass",
+   "a failed event check does not erase the two that passed")
+_det = [c for c in _pv.explain(_off)["checks"] if c["label"] == "Same event"][0]["detail"]
+ok("launch" in _det and "founding" in _det,
+   "the event detail names both milestones, so the user can see the mismatch")
+ok(_pv.explain(_off, zh=True)["checks"][2]["detail"] != _det
+   and "\u521b\u7acb" in _pv.explain(_off, zh=True)["checks"][2]["detail"],
+   "the reason is localised too, not just the label (half-translated is useless)")
+ok(isinstance(_off["explain"]["checks"][2]["detail"], dict),
+   "the record keeps the event detail structured, so it can be re-phrased")
+
+_sup = _judged("Solaris Grid was founded in 2011.", 2011)
+ok(_sup["verdict"] == "supported", "fixture: genuine match is supported")
+ok(all(c["status"] == "pass" for c in _sup["explain"]["checks"]),
+   "supported means every recorded check passed")
+ok(not _pv.explain(_sup)["assisted"],
+   "a deterministic match is not labelled as model-assisted")
+
+_con = _judged("Nordvind was founded in 1998.", 1998)
+ok(_con["verdict"] == "contradicted", "fixture: wrong year is contradicted")
+ok([c["status"] for c in _con["explain"]["checks"]].count("fail") == 1,
+   "a contradiction names exactly one failing check")
+
+# the invariant, stated once: `supported` may not carry a failed check
+for _cl in (_off, _sup, _con):
+    ok(not (_cl["verdict"] == "supported"
+            and any(c["status"] == "fail" for c in _cl["explain"]["checks"])),
+       f"no verdict of `supported` may show a failed check ({_cl['verdict']})")
+
+# the model-assisted path must announce itself, in both languages
+_ai = dict(_sup)
+_ai["explain"] = {"checks": [{"key": "subject", "status": "pass", "detail": "d"}],
+                  "origin": "corpus", "assisted": True}
+ok(_pv.explain(_ai)["assisted"]
+   and any("model" in ln for ln in _pv.render_md(_pv.explain(_ai))),
+   "a model-assisted subject match says so in the output")
+ok(any("\u6a21\u578b" in ln
+       for ln in _pv.render_md(_pv.explain(_ai, zh=True), zh=True)),
+   "...and says so in Chinese too")
+
+# zh must actually switch, not fall through to English
+ok(_pv.explain(_sup, zh=True)["headline"] != _pv.explain(_sup)["headline"],
+   "zh headline differs from en")
+ok(_pv.explain(_sup, zh=True)["checks"][0]["label"] != "Same subject",
+   "zh check labels are localised")
+
+# a finding with no recorded checks must still render (prose, quote, structure)
+for _bare in ({"verdict": "narrative"}, {"verdict": "unverified"},
+              {"verdict": "supported", "explain": {}},
+              {"verdict": "unverified", "explain": {"checks": [
+                  {"key": "bogus", "status": "pass", "detail": ""}]}},
+              {}):
+    ok(isinstance(_pv.explain(_bare).get("headline"), str)
+       and _pv.explain(_bare)["headline"] != "",
+       f"a bare finding still gets a headline ({_bare})")
+
+# records must round-trip: report re-render after user decisions reads these
+# back, and a lost `explain` would silently drop the checks from re-renders.
+_rec = _rpt.to_record(_off)
+ok(_rec["explanation"].get("checks"), "to_record keeps the recorded checks")
+ok(_rpt.from_record(_rec).get("explain", {}).get("checks")
+   == _off["explain"]["checks"],
+   "explanation survives to_record -> from_record (re-render keeps it)")
+ok(_rec["explanation"] is not _off["explain"],
+   "to_record stores a copy, not a live reference into the finding")
+
 # --- LLM token heuristic has no fake +2000 pad per call ---------------------
 from app.llm import LLM as _LLM  # noqa: E402
 _pr, _out = "hello " * 40, "ok " * 10
@@ -511,6 +746,94 @@ ok(_used < 400 and _used == len(_pr) // 4 + len(_out) // 4,
    f"token heuristic is prompt+out, not +2000: {_used}")
 _ll = _LLM(max_calls=5, max_tokens=8000, max_seconds=30)
 ok(_ll.tokens == 0, "LLM starts at 0 tokens (no ghost spend)")
+
+# --- Agnes provider chain: relay primary, official host behind it ----------
+# The relay is a personal host, so the thing worth pinning is that when it dies
+# the run KEEPS WORKING and says so -- not that it is preferred.
+import urllib.error as _ue  # noqa: E402
+import os  # noqa: E402
+from app import llm as _llmmod  # noqa: E402
+
+_saved_env = {k: os.environ.get(k) for k in
+              ("AGNES_API_KEY", "NEW_AGNES_API_KEY", "OPENAI_BASE_URL",
+               "OPENAI_MODEL", "DEEPSEEK_API_KEY")}
+for _k in ("GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+           "DEEPSEEK_API_KEY"):
+    os.environ.pop(_k, None)
+os.environ["AGNES_API_KEY"] = "official-key"
+os.environ["NEW_AGNES_API_KEY"] = "relay-key"
+os.environ.pop("OPENAI_BASE_URL", None)
+os.environ.pop("OPENAI_MODEL", None)
+
+_c = _LLM(max_calls=9, max_tokens=9000, max_seconds=99)._openai_candidates()
+ok([c[3] for c in _c][:2] == ["agnes-relay", "agnes"],
+   f"the relay is tried before the official Agnes host (got {[c[3] for c in _c]})")
+ok(_c[0][1] == "relay-key" and _c[1][1] == "official-key",
+   "each host keeps its OWN key -- keys are host-scoped, never shared")
+ok(_c[0][0] != _c[1][0], "relay and official are different endpoints")
+
+# a dead relay must fall through, count itself, and then stop being retried
+_dead = _LLM(max_calls=9, max_tokens=9000, max_seconds=99)
+_seen = []
+
+
+def _fake(prompt, cand):
+    _seen.append(cand[3])
+    if cand[3] == "agnes-relay":
+        raise _ue.HTTPError(cand[0], 401, "Invalid token", None, None)
+    return "ok"
+
+
+_dead._chat_openai_style = _fake
+_r1 = _dead.chat("hi")
+ok(_r1 == "ok" and _seen[:2] == ["agnes-relay", "agnes"],
+   f"a 401 on the relay falls through to the official host (tried {_seen})")
+ok(_dead.relay_fallbacks == 1 and _dead.provider == "agnes",
+   f"the fallback is recorded, not silent (n={_dead.relay_fallbacks})")
+
+_seen.clear()
+for _i in range(4):
+    _dead.chat("hi")
+ok(_seen.count("agnes-relay") == 2,
+   f"the breaker stops re-paying a dead relay on every call (tried {_seen})")
+ok(_dead.relay_dead and not [c for c in _dead._openai_candidates()
+                             if c[3] == "agnes-relay"],
+   "once dead, the relay leaves the candidate list entirely")
+
+# 429 is the quota of the host we are ON. It must not mark the relay dead, and
+# it must not trip the run-wide breaker either -- a rate window is
+# environmental, exactly as the existing `rate_limited` carve-out says.
+_q = _LLM(max_calls=9, max_tokens=9000, max_seconds=99)
+_hits = []
+
+
+def _q429(prompt, cand):
+    _hits.append(cand[3])
+    if cand[3] == "agnes-relay":
+        raise _ue.HTTPError(cand[0], 429, "rate limited", None, None)
+    return "ok"
+
+
+_q._chat_openai_style = _q429
+_saved_waits = _llmmod.CALL_DEADLINE
+_llmmod.CALL_DEADLINE = 8          # >5 so the block runs, but no 15s backoff fits
+try:
+    _qr = _q.chat("hi")
+finally:
+    _llmmod.CALL_DEADLINE = _saved_waits
+ok(_qr == "ok" and _hits == ["agnes-relay", "agnes"],
+   f"a rate-limited relay still hands the call to a working host (tried {_hits})")
+ok(_q.relay_fallbacks == 1, "the rate-limited relay is still reported")
+ok(_q.relay_streak == 0 and not _q.relay_dead,
+   "a 429 is busy, not dead: it must NOT retire the relay")
+ok(_q.net_dead is False and _q.fail_streak == 0,
+   "a rate window is environmental: it must not mark the run offline")
+
+for _k, _v in _saved_env.items():
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
 
 # --- Brave monthly cap: 0 remaining means the key is unusable ---------------
 from app import quota as _q  # noqa: E402
@@ -521,5 +844,38 @@ ok(_q.brave_left(1000) == 0, "spent month → 0 Brave queries left")
 _q._brave["used"] = 0
 ok(_q.brave_left(1000) == 1000, "fresh month has full cap")
 _q._brave.update(_saved)
+
+# --- IP quota: abuse guard when hosted, no-op when packaged ------------------
+from app.quota import check_ip as _cip  # noqa: E402
+
+_hosted = {"enforce_ip_quota": True, "quota_ip_per_day": 2, "max_words": 100,
+           "max_words_per_day": 250}
+_desktop = dict(_hosted, enforce_ip_quota=False)
+# the bucket check_ip reads is keyed by TODAY, not an arbitrary date
+_key = f"1.2.3.4:{_q._today()}"
+_saved_bucket = _q.IP.get(_key)
+ok(_cip("1.2.3.4", 10, _hosted)[0] is True, "hosted: under the run cap is allowed")
+_q.IP[_key] = {"runs": 2, "words": 20}
+ok(_cip("1.2.3.4", 10, _hosted)[0] is False,
+   "hosted: at the run cap is refused (protects shared keys)")
+ok(_cip("1.2.3.4", 10, _desktop)[0] is True,
+   "desktop: the same over-cap run is ALLOWED (user owns the keys)")
+ok(_cip("1.2.3.4", 5000, _desktop)[0] is False,
+   "desktop: the per-document sanity cap STILL applies")
+if _saved_bucket is None:
+    _q.IP.pop(_key, None)
+else:
+    _q.IP[_key] = _saved_bucket
+
+# --- the keyless auto chain is gone, not merely unused ----------------------
+from app import web as _web  # noqa: E402
+ok(not hasattr(_web, "WikipediaAPI") and not hasattr(_web, "WikidataAPI")
+   and not hasattr(_web, "SearXNG") and not hasattr(_web, "GoogleCSE"),
+   "auto-chain classes (ddgs/SearXNG/Wikidata/Wikipedia/CSE) are removed")
+_wd = _WE(_WB(1), backends="auto")
+ok(_wd.only == "deepseek", "an unknown/auto backend normalizes to deepseek")
+ok(not hasattr(_wd, "wikipedia") and not hasattr(_wd, "wikidata")
+   and not hasattr(_wd, "searxng"),
+   "WebEvidence carries no keyless backends")
 
 print(f"UNIT TESTS: PASS ({n} assertions)")

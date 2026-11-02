@@ -4,6 +4,7 @@ import zipfile
 from pathlib import Path
 
 from . import textproc as tp
+from .normalize import split_compound
 
 log = logging.getLogger("checkmato.extract")
 
@@ -22,11 +23,15 @@ def read_doc(path):
         from docx.text.paragraph import Paragraph
         doc = Document(str(path))
         paragraphs = []
+        headings = []
         for child in doc.element.body.iterchildren():
             tag = child.tag.rsplit("}", 1)[-1]
             if tag == "p":
-                t = Paragraph(child, doc).text.strip()
+                para = Paragraph(child, doc)
+                t = para.text.strip()
                 if t:
+                    if (para.style.name or "").startswith("Heading"):
+                        headings.append(len(paragraphs))
                     paragraphs.append(t)
             elif tag == "tbl":
                 for row in Table(child, doc).rows:
@@ -36,6 +41,12 @@ def read_doc(path):
                         paragraphs.append(line)
         raw = "\n\n".join(paragraphs)
         refs, defs = _docx_footnotes(path)
+        # WHERE each reference sits: the audit needs the anchor paragraph, not
+        # just the id list. Indices are mapped to the flattened body, because
+        # the raw XML walk also counts empty and table paragraphs.
+        anchors = _docx_footnote_anchors(path)
+        for a in anchors:
+            a["para"] = _map_para(paragraphs, a.get("para_text", ""))
         # text boxes / callout shapes live outside the paragraph flow but ARE
         # counted by Word — and case studies hide key figures in them
         have = {p.strip() for p in paragraphs}
@@ -45,12 +56,28 @@ def read_doc(path):
         paragraphs += _footnote_texts(path)
         raw = "\n\n".join(paragraphs)
         return {"fmt": ext, "paragraphs": paragraphs, "raw_text": raw,
-                "footnote_refs": refs, "footnote_defs": defs}
+                "footnote_refs": refs, "footnote_defs": defs,
+                "footnote_anchors": anchors, "heading_paras": headings}
     raw = path.read_text(encoding="utf-8", errors="replace")
     paragraphs = [b.strip() for b in re.split(r"\n\s*\n", raw) if b.strip()]
     refs, defs = _md_footnotes(raw)
     return {"fmt": ext, "paragraphs": paragraphs, "raw_text": raw,
-            "footnote_refs": refs, "footnote_defs": defs}
+            "footnote_refs": refs, "footnote_defs": defs,
+            "footnote_anchors": _md_footnote_anchors(paragraphs),
+            "heading_paras": [i for i, p in enumerate(paragraphs)
+                              if p.startswith("#")]}
+
+
+def _md_footnote_anchors(paragraphs):
+    """[{id, para, offset, para_text}] for `[^id]` references in markdown."""
+    out = []
+    for i, p in enumerate(paragraphs):
+        if re.match(r"^\[\^[^\]]+\]:", p):
+            continue  # definition line, not a reference
+        for m in re.finditer(r"\[\^([^\]\s:]+)\](?!:)", p):
+            out.append({"id": m.group(1), "para": i, "offset": m.start(),
+                        "para_text": p})
+    return out
 
 
 def _md_footnotes(raw):
@@ -125,6 +152,54 @@ def _docx_footnotes(path):
     return refs, defs
 
 
+def _map_para(paragraphs, text):
+    """Index of the flattened paragraph this XML paragraph became, or None."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    try:
+        return paragraphs.index(t)
+    except ValueError:
+        pass
+    head = t[:80]
+    for i, p in enumerate(paragraphs):
+        if p.startswith(head):
+            return i
+    return None
+
+
+def _docx_footnote_anchors(path):
+    """[{id, para, offset, para_text}] for every reference, in display order.
+
+    Offset is the character position of the reference inside its paragraph, so
+    the auditor can quote the clause the footnote is actually attached to.
+    """
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    out = []
+    try:
+        with zipfile.ZipFile(path) as z:
+            from lxml import etree
+            if "word/document.xml" not in z.namelist():
+                return out
+            root = etree.fromstring(z.read("word/document.xml"))
+            for p in root.iter(ns + "p"):
+                text, found = "", []
+                for el in p.iter():
+                    if el.tag == ns + "t":
+                        text += el.text or ""
+                    elif el.tag == ns + "footnoteReference":
+                        fid = el.get(ns + "id")
+                        if fid not in ("-1", "0"):
+                            found.append({"id": fid, "offset": len(text),
+                                          "para_text": ""})
+                for a in found:
+                    a["para_text"] = text
+                    out.append(a)
+    except Exception as e:
+        log.warning("docx footnote anchors failed for %s: %s", path, e)
+    return out
+
+
 def extract_claims(paragraphs):
     """Deterministic claim extraction: every factual assertion worth checking.
 
@@ -169,10 +244,18 @@ def extract_claims(paragraphs):
 
 
 def _inject_sentences(paragraphs, claims, add):
-    """Every sentence is a claim: if a sentence produced NO checkable item
-    (no number, quote, URL...), the sentence itself becomes one 'event' claim
-    so it gets web-checked like everything else. 'WPS was a word processor'
-    must not escape checking just because it contains no digits."""
+    """Every CLAUSE is a claim: if a clause produced NO checkable item (no
+    number, quote, URL...), the clause itself becomes one 'event' claim so it
+    gets checked like everything else. 'WPS was a word processor' must not
+    escape checking just because it contains no digits.
+
+    Compound sentences are split (`normalize.split_compound`) so one clause's
+    figure does not hide the other clause's prose: "Foo opened a plant in
+    2011, and it hired 200 staff" yields the two numeric claims AND an event
+    claim for the remaining clause. The displayed `sentence` stays the original
+    sentence; `raw` and `span` point at the clause, so the hover contract is
+    unchanged.
+    """
     covered = {}
     for c in claims:
         covered.setdefault(c["para"], []).append(tuple(c["span"]))
@@ -180,12 +263,22 @@ def _inject_sentences(paragraphs, claims, add):
         spans = covered.get(pidx, [])
         for sent, off in tp.sentences_spans(para):
             if len(sent) < 30 or not any(ch.isalpha() for ch in sent):
-                continue  # headings, bullets, fragments
-            lo, hi = off, off + len(sent)
-            if any(s >= lo and e <= hi for s, e in spans):
-                continue  # a claim already lives inside this sentence
-            add("event", sent[:200], None, None, sent, pidx, (0, min(len(sent), 200)))
-            claims[-1]["origin"] = "sentence"
+                continue
+            for part, start, end in split_compound(sent):
+                part = part.strip()
+                if len(part) < 20 or not any(ch.isalpha() for ch in part):
+                    continue  # a fragment ("and he left") is not a claim
+                at = sent.find(part, start, end)
+                if at < 0:
+                    at = sent.find(part)
+                if at < 0:
+                    continue
+                lo, hi = off + at, off + at + len(part)
+                if any(s >= lo and e <= hi for s, e in spans):
+                    continue  # a claim already lives inside this clause
+                raw = part[:200]
+                add("event", raw, None, None, sent, pidx, (lo, lo + len(raw)))
+                claims[-1]["origin"] = "sentence"
 
 
 def _finalize_anchors(claims, paragraphs):

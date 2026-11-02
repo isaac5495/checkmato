@@ -1,7 +1,7 @@
 """Persistent guest quotas (IP/day) and Brave monthly search cap.
 
 Brave free credit is ~1,000 queries/month. Spending it on every ladder rung
-was the silent quality cliff: once the key is empty, Auto still tried Brave
+was the silent quality cliff: once the key is empty, a chain still tried Brave
 first and paid 429s. Counts live in `.quota.json` so a restart cannot forget
 a spent month or a spent day.
 """
@@ -94,8 +94,13 @@ def brave_spend(n=1, cap=None):
 
 def check_ip(ip, words, cfg):
     day = IP.setdefault(f"{ip}:{_today()}", {"runs": 0, "words": 0})
+    # Per-document sanity cap: kept even when the per-day abuse counters are
+    # off, because it protects the machine (don't process a 10MB file) rather
+    # than a shared quota.
     if words > cfg["max_words"]:
         return False, f"document exceeds the {cfg['max_words']}-word cap"
+    if not cfg.get("enforce_ip_quota", True):
+        return True, ""      # desktop/app build: the user owns the keys
     if day["runs"] >= cfg["quota_ip_per_day"]:
         return False, "daily quota reached for this network — please try tomorrow"
     if day["words"] + words > cfg["max_words_per_day"]:
@@ -117,12 +122,21 @@ def snapshot(ip, cfg):
     with _LOCK:
         _roll_brave()
         used = int(_brave.get("used") or 0)
+    # When the per-day counters are switched off they must not be REPORTED as
+    # exhausted: a desktop build with runs_left = 0 renders in the UI as
+    # "0 runs left today", which is both false and the exact signal that makes
+    # a user think they are blocked when they are not. Say so plainly instead.
+    enforced = bool(cfg.get("enforce_ip_quota", True))
     return {
-        "runs_per_day": cfg["quota_ip_per_day"],
+        "enforced": enforced,
+        "runs_per_day": cfg["quota_ip_per_day"] if enforced else 0,
         "words_per_doc": cfg["max_words"],
-        "words_per_day": cfg["max_words_per_day"],
-        "runs_left": max(0, cfg["quota_ip_per_day"] - day["runs"]),
-        "words_left": max(0, cfg["max_words_per_day"] - day["words"]),
+        "words_per_day": cfg["max_words_per_day"] if enforced else 0,
+        "runs_left": (max(0, cfg["quota_ip_per_day"] - day["runs"])
+                      if enforced else None),
+        "words_left": (max(0, cfg["max_words_per_day"] - day["words"])
+                       if enforced else None),
+        "runs_used": day["runs"],
         "brave_cap": cap,
         "brave_used": used,
         "brave_left": max(0, cap - used),

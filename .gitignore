@@ -12,6 +12,7 @@ checkmato.toml
 logs/
 .ruff_cache/
 Kingsoft_ACRC_Case_Draft_v20260901_English.docx
+Kingsoft_ACRC_Case_Draft_v20260901_Chinese.docx
 
 
 render.yaml.bak

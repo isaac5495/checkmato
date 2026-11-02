@@ -10,6 +10,8 @@ os.environ["CHECKMATO_QUOTA_PATH"] = str(ROOT / "tests" / "_quota_test.json")
 from fastapi.testclient import TestClient  # noqa: E402
 from app.server import CFG, QUOTA, app  # noqa: E402
 
+CFG["enforce_ip_quota"] = True    # exercise the hosted guest budget explicitly;
+                                  # the dev toml ships enforce_ip_quota = false
 CFG["quota_ip_per_day"] = 1        # test the PRODUCTION guest budget, not dev toml
 CFG["max_words"] = 10_000
 CFG["max_words_per_day"] = 60_000

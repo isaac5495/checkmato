@@ -18,7 +18,7 @@ seeded hallucination findings; 59 unit assertions; robustness (determinism,
 M1.5 quality pass: full-depth job planner (`--estimate` / `/api/estimate`) with
 plan-confirm UX, every sentence checkable, Word-compatible docx counting (tables +
 notes), early-stop query ladders, snippet reuse + pool re-judge, page deep-reads,
-FX-pair arithmetic (incl. curated 1978-98 rates), SearXNG localhost fallback backend.
+FX-pair arithmetic (incl. curated 1978-98 rates).
 
 ## CLI
 
@@ -60,11 +60,12 @@ then open http://localhost:3000 (talks to the API on 8000).
 After editing `web/`, regenerate the single-process build with
 `cd web && npm run build` (outputs `web/out/`).
 
-## $0 by design
+## Cheap by design
 
-No paid services anywhere: keyless `ddgs` web search (entity-anchored, query ladder
-with early-stop) with optional self-hosted **SearXNG** (`deploy\searxng`, localhost
-Docker, adds Google/Bing keylessly); free-tier LLM optional via `.env`
+Explicit search engine, no auto chain: **DeepSeek Search** by default (in-house
+index, ~$0.75 per 1,000 successful requests; empty results are free) or **Brave**
+free credit, selected per run with `--backend`; entity-anchored query ladder with
+early-stop. Free-tier LLM optional via `.env`
 (Gemini/Groq/OpenAI-compatible auto-detect; OpenRouter via `OPENAI_BASE_URL`+`OPENAI_MODEL`);
 ECB/Frankfurter FX rates + a curated PBoC/IMF 1978-98 table (provenance in every
 evidence line); OpenCC s2t. Without keys or network the engine still runs fully:
@@ -78,6 +79,16 @@ exactly what was not checked).
 
 ## Continuous testing
 
+English BYOS evaluation (synthetic, not part of `run_all`):
+
+```
+.venv\Scripts\python.exe -X utf8 tests\run_eval_en.py --suite tests\eval_en
+```
+
+It prints support rate, false support, not-checked, false contradiction and
+internal conflicts. Prose is excluded from the deterministic denominator until
+the semantic pass lands.
+
 `tests/test_blind_lego.py` is the anti-overfitting gate: a company in no other
 fixture, facts scraped from the real web, errors seeded beforehand with
 pre-registered expectations (a real source-conflict case: lego.com vs Wikipedia
@@ -89,6 +100,6 @@ disagree on the naming year — the engine still catches the *fabricated* 1929).
   `enrich` `fx` `names` `diff` `annotate` `report` `estimate` `state` `cli` `server`
 - `tests/` — synthetic Nimbus fixtures only (EN, ZH, versions, PDF); every
   seeded hallucination is expected-verified; no proprietary data ships
-- `deploy/searxng/` — optional localhost-only second search backend (compose + settings)
+- `deploy/searxng/` — retired 2026-11-02 (kept for history; no longer read)
 - `PRD_factcheck_tool.md` — product spec (v0.6) as the single source of truth
 - `HANDOFF.md` — current state, ops commands, design invariants — read before changing anything

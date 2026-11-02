@@ -91,12 +91,22 @@ export default function Home() {
   const [selected, setSelected] = useState(null);
   const [active, setActive] = useState(null); // Set of verdicts filter, null = all
   const fileRef = useRef(null);
-  const web = true, llm = true; // web + LLM are always on (free tiers); no user choice
+  // Two distinct jobs, and the difference is who supplies the evidence:
+  //   search -> the tool looks the claims up itself (web on)
+  //   byos   -> the tool may ONLY use the sources the user uploaded (web off)
+  // `web` is DERIVED from the mode instead of being hardcoded on. Leaving it
+  // constant meant a BYOS run still went to the open web, which quietly
+  // answers claims the user's own documents were supposed to be the sole
+  // authority on -- the opposite of what uploading sources is for.
+  const [mode, setMode] = useState("search");
+  const web = mode === "search";
+  const llm = true; // free tier, no user choice
   const [whitelist, setWhitelist] = useState("");
-  const [engine, setEngine] = useState("auto"); // auto | brave | ddgs
+  const [engine, setEngine] = useState("deepseek"); // deepseek | brave
   const [backend, setBackend] = useState("unknown"); // ok | down
   const [quota, setQuota] = useState(null);
   const [files, setFiles] = useState([]); // {file, role: 'doc'|'source'|'alias'}
+  const sourceCount = files.filter((f) => f.role === "source").length;
   const [decBusy, setDecBusy] = useState(false);
   const [lastEv, setLastEv] = useState(0);  // ts of last SSE event (liveness timer)
   const [now, setNow] = useState(0);
@@ -155,7 +165,7 @@ export default function Home() {
         setBackend("ok");
         if (j.quota) {
           setQuota(j.quota);
-          if ((j.quota.brave_left || 0) <= 0) setEngine((e) => (e === "brave" ? "auto" : e));
+          if ((j.quota.brave_left || 0) <= 0) setEngine((e) => (e === "brave" ? "deepseek" : e));
         }
       } catch {
         if (!stop) setBackend("down");
@@ -248,9 +258,12 @@ export default function Home() {
           if (!window.confirm(
             `Job plan for ${e.words?.toLocaleString?.() ?? e.words} words ` +
             `(${e.need_web} claims need live checks):\n\n` +
-            `  • ~${pl.searches} web searches (budget: up to 5-6/claim, spent only while a claim is unsettled)\n` +
-            `  • ${pl.deep_checks} sentence-level deep checks — every claim\n` +
-            `  • ${pl.pages} full-page deep-reads\n` +
+            (web
+              ? `  • ~${pl.searches} web searches (budget: up to 5-6/claim, spent only while a claim is unsettled)\n` +
+                `  • ${pl.deep_checks} sentence-level deep checks — every claim\n` +
+                `  • ${pl.pages} full-page deep-reads\n`
+              : `  • NO web lookups — verdicts rest only on your ${sourceCount} uploaded source file${sourceCount === 1 ? "" : "s"}\n` +
+                `  • ${pl.deep_checks} sentence-level source checks — every claim\n`) +
             `  • ${pl.llm_calls} LLM judgment calls\n\n` +
             `Estimated time: ~${fmtDur(pl.sec_typ ?? e.seconds_typ)} ` +
             `(usually ${fmtDur(e.seconds_lo)}–${fmtDur(e.seconds_hi)})\n` +
@@ -376,10 +389,12 @@ export default function Home() {
         </div>
         {quota && (
           <div className="sub" style={{ fontSize: 12 }}>
-            {quota.runs_left} run{quota.runs_left === 1 ? "" : "s"} left today
+            {quota.enforced === false
+              ? "no daily run limit on this instance (local / desktop build)"
+              : `${quota.runs_left} run${quota.runs_left === 1 ? "" : "s"} left today`}
             {quota.brave_left > 0
               ? ` · Brave ${quota.brave_left}/${quota.brave_cap} this month`
-              : " · Brave spent this month — DuckDuckGo / SearXNG / Wikipedia"}
+              : " · Brave spent this month — DeepSeek Search"}
           </div>
         )}
       </header>
@@ -394,8 +409,57 @@ export default function Home() {
       )}
 
       <section className="card input">
+        <div className="row" style={{ marginBottom: 10 }}>
+          <span style={{ fontSize: 12, color: "#5b6770" }}>Mode</span>{" "}
+          <div style={{ display: "inline-flex", gap: 4 }}>
+            {[
+              ["search", "Search the web", "The tool looks each claim up itself"],
+              ["byos", "Check my own sources", "Only the files you upload are used"],
+            ].map(([val, label, tip]) => (
+              <button
+                key={val}
+                onClick={() => setMode(val)}
+                disabled={busy}
+                title={tip}
+                style={{
+                  fontSize: 12,
+                  padding: "4px 10px",
+                  cursor: busy ? "default" : "pointer",
+                  borderRadius: 6,
+                  border: `1px solid ${mode === val ? "#2c6f5e" : "#d7dee3"}`,
+                  background: mode === val ? "#e6f2ec" : "#fff",
+                  color: mode === val ? "#1f5346" : "#5b6770",
+                  fontWeight: mode === val ? 600 : 400,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="spacer" />
+          <span style={{ fontSize: 12, color: "#7b8794" }}>
+            {web ? "live lookups enabled" : "no internet lookups — offline against your files"}
+          </span>
+        </div>
+        {mode === "byos" && (
+          <div className="banner" style={{ marginBottom: 10 }}>
+            <b>Bring your own sources.</b> Every verdict will rest only on the files you
+            upload below &mdash; nothing is fetched from the web. Upload the text to check,
+            then add the source documents (.md/.txt/.pdf/.docx/.csv) it should be judged
+            against. Claims your sources do not cover stay <code>unverified</code>;
+            they are never filled in from the open internet.
+            {sourceCount === 0 && (
+              <div style={{ marginTop: 6, fontWeight: 600 }}>
+                No source files yet &mdash; without them there is nothing to check against,
+                so every claim will come back unverified.
+              </div>
+            )}
+          </div>
+        )}
         <textarea
-          placeholder="Paste your AI-drafted article / case study here… (or upload .docx/.md/.txt)"
+          placeholder={web
+            ? "Paste your AI-drafted article / case study here… (or upload .docx/.md/.txt)"
+            : "Paste the text to fact-check here… (then upload your source documents below)"}
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={7}
@@ -428,25 +492,34 @@ export default function Home() {
           </div>
         )}
         <div className="row">
-          <span style={{ fontSize: 12, color: "#5b6770" }}>Search</span>{" "}
-          <select
-            style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #d7dee3", borderRadius: 6 }}
-            value={engine}
-            onChange={(e) => setEngine(e.target.value)}
-            title="auto tries DuckDuckGo, then local SearXNG, then Wikipedia; Brave only if monthly credit remains"
-          >
-            <option value="auto">Auto (DuckDuckGo → SearXNG → Wikipedia)</option>
-            <option value="brave" disabled={quota && quota.brave_left <= 0}>
-              {quota && quota.brave_left <= 0 ? "Brave only (spent this month)" : "Brave only"}
-            </option>
-            <option value="ddgs">DuckDuckGo only</option>
-          </select>
+          {web ? (
+            <>
+              <span style={{ fontSize: 12, color: "#5b6770" }}>Search</span>{" "}
+              <select
+                style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #d7dee3", borderRadius: 6 }}
+                value={engine}
+                onChange={(e) => setEngine(e.target.value)}
+                title="DeepSeek Search (in-house index, DEEPSEEK_API_KEY) or Brave (monthly free credit)"
+              >
+                <option value="deepseek">DeepSeek Search</option>
+                <option value="brave" disabled={quota && quota.brave_left <= 0}>
+                  {quota && quota.brave_left <= 0 ? "Brave only (spent this month)" : "Brave only"}
+                </option>
+              </select>
+            </>
+          ) : (
+            <span style={{ fontSize: 12, color: "#5b6770" }}>
+              Sources: <b>{sourceCount}</b> file{sourceCount === 1 ? "" : "s"}
+            </span>
+          )}
           <span className="spacer" />
           <input
             className="wl"
             placeholder="site whitelist, e.g. reuters.com,gov.cn"
             value={whitelist}
             onChange={(e) => setWhitelist(e.target.value)}
+            disabled={!web}
+            title={web ? "Only accept evidence from these domains" : "Web lookups are off in this mode"}
           />
           <button className="go" onClick={check} disabled={busy || (!text.trim() && !files.some((f) => f.role === "doc"))}>
             {busy ? "Checking…" : "Check document"}
@@ -599,6 +672,18 @@ export default function Home() {
                   </div>
                   <blockquote>{sel.quote}</blockquote>
                   {sel.notes && <p className="notes">{sel.notes}</p>}
+                  {sel.search_suggestions?.length > 0 && (
+                    <div className="suggests">
+                      <p className="hint">Search this yourself:</p>
+                      {sel.search_suggestions.map((q, i) => (
+                        <a key={i} className="sug" target="_blank" rel="noreferrer"
+                           title="Open this query in a search engine"
+                           href={"https://www.google.com/search?q=" + encodeURIComponent(q)}>
+                          {q}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                   <ul className="ev">
                     {sel.evidence.map((e, i) => (
                       <li key={i}>

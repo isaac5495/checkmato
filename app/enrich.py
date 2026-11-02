@@ -14,21 +14,27 @@ from . import llm as llm_mod
 from . import textproc as tp
 
 
-def mark_narrative(claims):
-    """Deterministic eligibility floor: a claim carried entirely by a markdown
-    HEADING or a rhetorical QUESTION asserts nothing checkable — a human
-    checker would not open an item for it. Mark those 'narrative' (visible,
-    with a reason; never searched, never counted as pending)."""
+def mark_narrative(claims, heading_paras=()):
+    """Deterministic eligibility floor: a claim carried entirely by a heading or
+    a rhetorical QUESTION asserts nothing checkable — a human checker would not
+    open an item for it. Mark those 'narrative' (visible, with a reason; never
+    searched, never counted as pending).
+
+    `heading_paras` comes from the document reader (docx styles / md '#'), which
+    is the only reliable signal for a Word heading: its text has no marker.
+    """
+    heads = set(heading_paras or ())
     for c in claims:
         if c["verdict"] != "unverified":
             continue
         s = (c.get("sentence") or "").strip()
-        if s.startswith("#") or s.endswith(("?", "？")):
+        if c.get("para") in heads or s.startswith("#") or s.endswith(("?", "？")):
             c["verdict"] = "narrative"
             c["confidence"] = "n/a"
             c["_skip_reason"] = "heading/question text — asserts no checkable fact"
-            c["suggestion"] = ("Narrative context (title or question): states no "
-                               "fact to search — kept visible for transparency.")
+            c["suggestion"] = ("Narrative context (heading, title or question): "
+                               "states no fact to search — kept visible for "
+                               "transparency.")
 
 
 def classify_prose(llm, claims, progress=None):
@@ -305,10 +311,10 @@ def _reuse_pass(claims, web, _p):
             _p({"stage": "reuse", "id": c["id"], "used": web.budget.used,
                 "item": c["raw"][:60]})
         elif st == "contradicted":
-            c["verdict"], c["confidence"] = "contradicted", "medium"
-            c["evidence"] = (c.get("evidence") or []) + ev
-            c["suggestion"] = (f"An already-retrieved snippet states "
-                               f"{r.get('conflicting', 'a different value')}.")
+            # reuse_pool is support-only by contract; ignore a contradiction
+            # defensively so no future caller can re-introduce the year-list
+            # false alarm (2026-11-02).
+            continue
 
 
 def _claim_rare(c):
@@ -654,53 +660,29 @@ def _pool_judge(claims, web, llm, _p, cancel=None):
     _p({"stage": "pooljudge_done", "settled": found, "used": web.budget.used})
 
 
-def _explain(claims, web):
+def _explain(claims, web, corpus=None):
     """No claim may end the run as a bare 'unverified': say WHY, and hand the
-    user concrete queries to check by hand (evidence or honesty, never silence)."""
+    user concrete queries to check by hand (evidence or honesty, never silence).
+
+    The queries come from `queries.hand_queries`, which builds the shape the
+    engine itself searches with (own subject · figure · rarest terms), instead
+    of the first five non-stopwords in reading order prefixed with entity[0].
+    """
+    from .queries import hand_queries
     ents = web.raw_entities or []
+    native = getattr(web, "native_for", None)
     for c in claims:
         if c["verdict"] not in ("unverified", "deferred_web") or c.get("_dup_of"):
             continue
         if str(c.get("_skip_reason", "")).startswith("citation"):
             continue  # keeps its own, clearer "this is a footnote" note
-        qs = [q for q in (c.get("_planned_queries") or [])[:2]]
-        if not qs and c.get("_web_queries"):
-            qs = [q for q in c["_web_queries"] if q][:2]
-        if not qs and c.get("_web_q"):
-            qs = [c["_web_q"]]
-        if not qs:
-            head = ents[0] if ents else ""
-            rare = tp.rare_phrase(c.get("sentence", ""), 5)
-            q = " ".join(x for x in (head, rare) if x).strip()
-            if q:
-                qs = [q]
-        # What a human would actually type: the native-script entity·figure
-        # query when we know one, the document's OWN quoted phrases for
-        # quotes (the Chinese slogan beats a Latin clause no source wrote),
-        # and never a bare single token like "Kingsoft" passed off as advice.
-        lead = []
-        if c["type"] == "quote":
-            runs = tp.cjk_runs(c.get("sentence") or "")
-            if runs:
-                lead.append(f'"{runs[0]}"')
-            if (c.get("raw") or "").strip():
-                lead.append('"' + c["raw"].strip()[:80] + '"')
-        else:
-            nats = web.native_for(c)
-            vd = web._value_str(c)
-            if nats and vd and c["type"] in ("year", "pct", "count"):
-                lead.append(f"{nats[0]} {vd}")
-        seenq, merged = set(), []
-        for q in lead + qs:
-            q = (q or "").strip()
-            k = tp.normalize(q)
-            if not q or k in seenq:
-                continue
-            if len(q.split()) < 2 and not q.startswith('"'):
-                continue  # a lone entity name is not a checkable query
-            seenq.add(k)
-            merged.append(q)
-        qs = merged[:2]
+        engine_qs = [q for q in (c.get("_planned_queries") or [])[:2]]
+        if not engine_qs:
+            engine_qs = [q for q in (c.get("_web_queries") or []) if q][:2]
+        if not engine_qs and c.get("_web_q"):
+            engine_qs = [c["_web_q"]]
+        qs = hand_queries(c, corpus=corpus, entities=ents, native=native,
+                          extra=engine_qs, limit=4)
         if c.get("_searched"):
             why = "searched, but no snippet convincingly carried this value/wording"
         elif c.get("_skip_reason"):
@@ -712,7 +694,8 @@ def _explain(claims, web):
         if c["type"] == "url":
             tail = " Open the link or search its page title by hand."
         else:
-            tail = (" Try by hand: " + "  |  ".join(f'"{q}"' for q in qs[:2])) if qs else ""
+            _show = [q if q.startswith('"') else f'"{q}"' for q in qs[:2]]
+            tail = (" Try by hand: " + "  |  ".join(_show)) if _show else ""
         c["suggestion"] = f"Unverified — {why}.{tail}"
         if qs:
             c["manual_checks"] = qs
@@ -744,10 +727,12 @@ def _share_result(group):
             c["_skip_reason"] = lead.get("_skip_reason")
             c["_web_queries"] = lead.get("_web_queries")
             c["_planned_queries"] = lead.get("_planned_queries")
+            c["manual_checks"] = list(lead.get("manual_checks") or [])
         c["_dup_of"] = lead["id"]
 
 
-def enrich(claims, web, llm, progress=None, context=None, cancel=None):
+def enrich(claims, web, llm, progress=None, context=None, cancel=None,
+           corpus=None):
     _p = progress or (lambda e: None)
     _cx = cancel or (lambda: False)
     deep = bool(web and llm and llm.available)
@@ -834,5 +819,5 @@ def enrich(claims, web, llm, progress=None, context=None, cancel=None):
         _pool_judge(claims, web, llm, _p, cancel=_cx)
         for g in groups:
             _share_result(g)
-        _explain(claims, web)
+        _explain(claims, web, corpus=corpus)
     return claims, upgraded

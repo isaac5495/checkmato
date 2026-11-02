@@ -8,3 +8,36 @@ quote_paraphrase_cut = 0.62   # >= this => `paraphrase_flag`
 llm_max_calls       = 20      # per-run LLM call cap
 llm_max_tokens      = 60000   # per-run LLM token cap
 whitelist = []                # e.g. ["reuters.com","gov.cn","hkex.com.hk"]
+
+# --- guest rate limits -------------------------------------------------------
+# These were MISSING here, so every deployment silently inherited the built-in
+# defaults in app/config.py -- quota_ip_per_day = 1, i.e. ONE document per day
+# per IP, surfacing as "daily quota reached for this network". Set them
+# deliberately or you will get the default again.
+#
+# quota_ip_per_day counts document RUNS, not cost. Cost is bounded by
+# max_search (per run) and max_words_per_day (per IP per day) -- prefer those
+# knobs. Choose the run cap by audience:
+#   public guest tier  -> 1..5    (one IP could otherwise loop the free tier)
+#   private / internal -> 25+     (or 0 for no run cap; words/day still applies)
+#
+# enforce_ip_quota decides whether the per-DAY counters apply at all:
+#   true  = hosted. Protects the operator's shared free-tier keys from
+#           strangers on one instance. Required for any public deploy.
+#   false = packaged desktop app. The user owns the machine, the IP and the
+#           API keys, so there is no shared quota to protect and the cap is
+#           pure friction. The per-document max_words cap still applies.
+enforce_ip_quota  = true      # packaged desktop build: set false
+quota_ip_per_day   = 25
+max_words          = 30000     # per document
+max_words_per_day  = 300000    # per IP per day, all documents combined
+
+# --- search engine (explicit; there is no auto chain) -------------------------
+# Web search uses the engine chosen per run: DeepSeek Search (default,
+# DEEPSEEK_API_KEY) or Brave (BRAVEX_API_KEY, monthly free credit). The retired
+# ddgs / SearXNG / Wikidata / Wikipedia chain (2026-11-02) is no longer read;
+# `searxng_url` / `searxng_engines` below are ignored if present.
+# searxng_url    = "http://127.0.0.1:8888"
+# searxng_engines = "bing,mojeek"
+
+

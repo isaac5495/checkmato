@@ -163,8 +163,8 @@ async def check(request: Request, text: str = Form(""),
                 corpus: list[UploadFile] = File(default=[]),
                 names: UploadFile | None = File(None),
                 web: bool = Form(False), llm: bool = Form(False),
-                whitelist: str = Form(""), backend: str = Form("auto")):
-    backend = backend if backend in ("auto", "brave", "ddgs") else "auto"
+                whitelist: str = Form(""), backend: str = Form("deepseek")):
+    backend = backend if backend in ("deepseek", "brave") else "deepseek"
     ip = _client_ip(request)
     res = await _save_uploads(text, doc, corpus, names)
     if isinstance(res, str):
@@ -204,7 +204,10 @@ async def check(request: Request, text: str = Form(""),
     loop = asyncio.get_running_loop()
 
     def job():
-        quota.charge_ip(ip, words)
+        # Only meter a run when the per-day counters are actually enforced;
+        # otherwise a desktop build writes pointless quota state to disk.
+        if CFG.get("enforce_ip_quota", True):
+            quota.charge_ip(ip, words)
         try:
             findings, meta = run(
                 str(doc_path), str(corpus_dir) if corpus_dir else None, str(out),

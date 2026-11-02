@@ -334,6 +334,9 @@ def extract_values(text):
     Returns list of dicts {kind, value, currency, raw, start, end}.
     Overlapping matches are resolved longest-first.
     """
+    # "122 000" is one number, not 122 and 000. Replace the separator with a
+    # comma (same length, so offsets stay valid) instead of dropping it.
+    text = re.sub(r"(?<=\d)[ \u00a0](?=\d{3}(?!\d))", ",", text)
     found = []
     for m in YEAR_RE.finditer(text):
         if _is_product_year(text, m):
@@ -486,6 +489,87 @@ def detect_entities(paragraphs, max_n=6):
     return out[:max_n]
 
 
+# Chinese names have no capitalisation to anchor on, so the subject guard needs
+# an organisation-suffix detector. Without it every 恒宇* company looks like the
+# same subject (the 2-char 恒宇 bigram is shared), which is how a subsidiary's
+# fact was showing up as a parent's support.
+_CJK_ORG_SUFFIXES = (
+    "集团", "集團", "公司", "控股", "实业", "實業", "科技", "健康",
+    "医疗", "醫療", "医院", "醫院", "银行", "銀行", "保险", "保險",
+    "证券", "證券", "电子", "電子", "网络", "網絡", "软件", "軟件",
+    "半导体", "半導體", "通信", "物流", "能源", "汽车", "汽車",
+    "地产", "地產", "基金", "资本", "資本", "投资", "投資", "大学",
+    "大學", "学院", "學院", "研究院", "研究所", "实验室", "實驗室",
+    "药业", "藥業", "生物", "传媒", "傳媒", "航空", "航天", "建设",
+    "建設", "工程", "咨询", "諮詢", "会计", "會計", "办公", "辦公",
+    "云", "雲",
+)
+_CJK_BAD_HEAD_START = set("该該本其这這那一个各子分母总總全共两兩几幾每团團")
+_CJK_BAD_HEADS = {"全资", "全資", "资子", "資子", "团全", "團全", "集团",
+                  "集團", "公司", "控股", "参股", "參股", "旗下", "母子",
+                  "分公", "办公", "辦公", "计算", "計算", "服务", "服務",
+                  "智能", "数据", "數據", "信息", "国际", "國際"}
+_CJK_BAD_CHARS = set(
+    "加入当时當就对于對於味着著回看实實是了的在和与與及或而但却都也还還"
+    "又很更最将被將把从從向为為以因由这這那他她它我你您们們个個些种種位名"
+    "到給有讓助來自")
+
+
+def detect_cjk_entities(paragraphs, max_n=200):
+    """CJK organisation names, anchored on a suffix (集团/科技/健康/银行…).
+
+    Capitalised n-grams find nothing in Chinese, so without this the subject
+    guard sees only 2-char bigrams and cannot tell 恒宇健康 from 恒宇科技.
+    A candidate is accepted when it repeats or is quoted (a product line such
+    as “恒宇云” may be named once). Frequent short names outrank long quoted
+    phrases, otherwise a 6,000-line book fills the list with sentence
+    fragments before 金山办公 is ever seen.
+    """
+    counts = {}
+    quoted = set()
+    for p in paragraphs or ():
+        text = p if isinstance(p, str) else str(p)
+        for suf in _CJK_ORG_SUFFIXES:
+            for m in re.finditer(re.escape(suf), text):
+                i = m.start()
+                for k in (2, 3, 4):
+                    j = i - k
+                    if j < 0:
+                        continue
+                    head = text[j:i]
+                    if not all("\u4e00" <= ch <= "\u9fff" for ch in head):
+                        continue
+                    if head[0] in _CJK_BAD_HEAD_START or head in _CJK_BAD_HEADS:
+                        continue
+                    if any(ch in _CJK_BAD_CHARS for ch in head):
+                        continue
+                    cand = head + suf
+                    counts[cand] = counts.get(cand, 0) + 1
+        for m in re.finditer(r"[“「『]([\u4e00-\u9fff]{2,10})[”」』]", text):
+            quoted.add(m.group(1))
+    ents = [e for e, n in counts.items() if n >= 2 or e in quoted]
+    ents.extend(q for q in quoted if q not in ents)
+
+    def score(e):
+        return (counts.get(e, 0) + (3 if e in quoted else 0), len(e))
+
+    ents.sort(key=score, reverse=True)
+    return list(dict.fromkeys(ents))[:max_n]
+
+
+def entity_head(entity):
+    """The name part of an organisation entity (恒宇健康 -> 恒宇, Caelum Labs
+    -> Caelum). Used only to permit a documented short form when no sibling
+    entity is named in the same evidence."""
+    e = normalize(entity)
+    if not e:
+        return ""
+    for suf in _CJK_ORG_SUFFIXES:
+        if e.endswith(suf) and len(e) > len(suf):
+            return e[:-len(suf)]
+    return e.split()[0]
+
+
 def detect_language(paragraphs):
     total = sum(len(p) for p in paragraphs) or 1
     cjk = sum(len(CJK.findall(p)) for p in paragraphs)
@@ -493,7 +577,12 @@ def detect_language(paragraphs):
 
 
 # Event anchors: surface variants that denote the SAME milestone. Used by the
-# timeline builder to detect "entity did EVENT in two different years".
+# timeline builder to detect "entity did EVENT in two different years", and by
+# the BYOS judge's predicate guard to stop a matching year confirming a
+# DIFFERENT milestone ('founded 2011' must not support 'opened its plant 2011').
+# The surface lists must be wide enough to recognize how the events are
+# actually written: an unrecognized event reads as "no event", which silently
+# disables the guard on exactly the claims that need it.
 EVENT_ANCHORS = {
     "founding": ["found", "founding", "founded", "establish", "start", "beg",
                  "成立", "创办", "創立", "创立", "设立"],
@@ -501,11 +590,15 @@ EVENT_ANCHORS = {
             "上市", "掛牌", "挂牌"],
     "acquisition": ["acquir", "bought", "take over", "took over", "merger",
                     "收购", "收購", "并购"],
-    "launch": ["launch", "unveil", "release", "debuts", "roll out",
-               "发布", "發佈", "推出"],
+    "launch": ["launch", "unveil", "release", "debuts", "roll out", "announce",
+               "announc", "introduc", "open",
+               "发布", "發佈", "推出", "宣布", "宣佈", "问世", "問世"],
     "naming": ["named", "renamed", "became name", "改名", "命名", "更名"],
     "funding_round": ["series a", "series b", "series c", "series d", "funding",
-                      "round", "融资", "融資"],
+                      "round", "rais", "融资", "融資"],
+    "certification": ["certif", "airworthiness", "认证", "認證", "资质",
+                      "資質"],
+    "clearance": ["clearance", "clearanc", "核准", "批准"],
     "shutdown": ["shut down", "closed", "dissolv", "liquidat", "bankrupt",
                  "破产", "倒閉", "关闭"],
 }
@@ -609,3 +702,56 @@ def name_tokens(text):
     for m in re.finditer(r"([\u4e00-\u9fff]{2,4}?)(?=于|在|从)", text):
         toks |= tokens(m.group(1))
     return toks
+
+
+# Placeholders that stand in for a subject without naming one. A line saying
+# "The company was founded in 2011" is about SOME company, which is not the
+# same claim as one about a named one.
+_GENERIC_SUBJECT = {
+    "company", "companies", "firm", "firms", "corporation", "corp", "co",
+    "organization", "organisation", "group", "business", "startup",
+    "start-ups", "venture", "the", "it", "they", "this", "that", "inc",
+    "ltd", "plc", "gmbh", "sdn", "bv", "ab", "as",
+    "公司", "企业", "企業", "集团", "集團", "该", "該", "这", "這", "那",
+    "本公司", "本集团", "本企業",
+}
+
+_PRED_VOCAB = None
+
+
+def _predicate_vocab():
+    """Every token that appears inside an EVENT_ANCHORS entry."""
+    global _PRED_VOCAB
+    if _PRED_VOCAB is None:
+        s = set()
+        for kws in EVENT_ANCHORS.values():
+            for k in kws:
+                s |= tokens(k)
+        _PRED_VOCAB = s
+    return _PRED_VOCAB
+
+
+def shares_subject(claim_text, line):
+    """Do these two texts share a token that could only be the SUBJECT?
+
+    Surviving a token requires it to be non-numeric, not a stopword, not a
+    generic placeholder, and not part of any event anchor. That is deliberate:
+    on anaphoric evidence the ONLY thing two texts share is the predicate
+    ("the company" vs "Northwind Systems" share just "found"), so excluding
+    predicate vocabulary is what separates "names the same thing" from "is
+    about some thing".
+
+    Used to decide whether asking a model "are these about the same subject?"
+    is a question with an answer. It is NOT a name matcher — `name_tokens`
+    misses single-word subjects and returns predicate fragments in Chinese, so
+    it cannot answer this (measured: "Helio" -> [], "远景出版社正式成立" ->
+    ['式成', '成立', '正式']).
+    """
+    pred = _predicate_vocab()
+    for t in (tokens(claim_text) & tokens(line)):
+        if t.isdigit() or t in STOP or t in _GENERIC_SUBJECT or t in pred:
+            continue
+        if len(t) < 2 and t.isascii():
+            continue
+        return True
+    return False
