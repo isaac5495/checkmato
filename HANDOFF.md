@@ -1,17 +1,17 @@
 # CheckMato — Handoff
 
-Status: 2026-11-05 · W1.1 checkpoint (local, not pushed) · all gates green.
+Status: 2026-11-05 · W1.2 checkpoint (local, not pushed) · all gates green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
-retrieval) is done; W1.2 (eligibility), W1.3 (claim unit / multi-passage),
-W1.4 (semantic prose), W3 (citation lane), W4 (scanned PDFs) and W6 (product
-surface) remain open. Written for whoever picks this up next (AI session or human) so today's
+retrieval) and W1.2 (commentary eligibility) are done; W1.3 (claim unit /
+multi-passage), W1.4 (semantic prose), W3 (citation lane), W4 (scanned PDFs)
+and W6 (product surface) remain open. Written for whoever picks this up next (AI session or human) so today's
 decisions don't get re-litigated.
 Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
 ## Repo state (2026-11-05)
 
-- `main` is one local commit ahead of `origin/main`; the W1.1 checkpoint
-  (prose retrieval) is not pushed. The only untracked file is
+- `main` is two local commits ahead of `origin/main`; the W1.1/W1.2
+  checkpoints are not pushed. The only untracked file is
   `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
   document — do not add it). `.opencode` is ignored by the tooling.
 - Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
@@ -19,16 +19,33 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
   0 contradicted, ≤ **$0.0405**. DeepSeek bills successful requests only
   ($0.00075 each); page deep-reads are direct HTTP and free.
-- Next session starts with **W1.2** (eligibility/narrative), then W1.3
-  (claim unit + multi-passage), then W1.4 (`app/nli.py` behind `--semantic`).
-  W1.1 prose retrieval landed 2026-11-05; prose still stays honestly
+- Next session starts with **W1.3** (claim unit + multi-passage), then W1.4
+  (`app/nli.py` behind `--semantic`). W1.1 prose retrieval and W1.2
+  commentary eligibility landed 2026-11-05; prose still stays honestly
   `unverified` until W1.4, so the 90% target is still unreachable.
   Deterministic leftovers and the parked ideas are in `IMPROVEMENT_PLAN.md`
   §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (12 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (13 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-05 — W1.2 commentary eligibility (code changed)
+
+The 20-item eval's 5 `not_checkable` cases were essay commentary ("38年来…",
+"历经多次危机…", "已逐渐凝聚为…", "我们将深入剖析…", "从来不是…而是…").
+`mark_narrative` only covered headings/questions; a `sources_only` run has no
+LLM triage, so they stayed `unverified` and entered retrieval.
+
+- `app/enrich.py`: `mark_commentary()` — a deterministic, conservative floor
+  for authorial method/transition, temporal summaries, interpretive summaries,
+  belief/value statements, evaluative contrasts and method/analysis. Only
+  `event`/`sentence` claims; numeric/quote claims are untouched. A false
+  negative is safer than silently dropping a fact.
+- `app/cli.py`: called after `mark_narrative()` and before `classify_prose()`.
+- `tests/test_narrative_floor.py`: 15 synthetic assertions (fictional 华光),
+  in `run_all` (13 suites).
+- Private 20-item check: **5/5 A -> narrative; 0 of the other 15 changed**.
 
 ## 2026-11-05 — W1.1 prose retrieval (code changed)
 

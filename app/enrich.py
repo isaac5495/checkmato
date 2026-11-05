@@ -37,6 +37,47 @@ def mark_narrative(claims, heading_paras=()):
                                "transparency.")
 
 
+_COMMENTARY_RULES = (
+    (re.compile(r"我们将|本文将|本章将|本节将|接下来|下面我们|本文旨在|本章旨在"),
+     "authorial method/transition"),
+    (re.compile(r"(?:\d+年|多年|几十年来|这些年来)[^。！？]{0,24}"
+                r"(?:历经|经历|走过|见证)"),
+     "temporal summary, not a single checkable event"),
+    (re.compile(r"如出一辙|破局轨迹"), "interpretive summary"),
+    (re.compile(r"已逐渐凝聚为|凝聚为一种|坚定的信念"), "belief/value statement"),
+    (re.compile(r"从来不是[^。！？]{0,30}而是|绝非[^。！？]{0,20}而是"),
+     "evaluative contrast"),
+    (re.compile(r"深入剖析|系统梳理|试图揭示"), "authorial method/analysis"),
+)
+
+
+def mark_commentary(claims):
+    """Deterministic eligibility floor for commentary/analysis.
+
+    A `sources_only` run has no LLM triage, so essay prose such as "38年来…"
+    or "我们将深入剖析…" would otherwise be sent to retrieval and reported as
+    'unverified'. Mark only clear authorial/interpretive markers as narrative;
+    numeric and quote claims are untouched. Conservative by design: a false
+    negative is safer than silently dropping a real fact (rule 3).
+    """
+    for c in claims:
+        if c.get("verdict") != "unverified":
+            continue
+        if c.get("type") not in ("event", "sentence"):
+            continue
+        s = (c.get("sentence") or "").strip()
+        for rx, why in _COMMENTARY_RULES:
+            if rx.search(s):
+                c["verdict"] = "narrative"
+                c["confidence"] = "n/a"
+                c["_skip_reason"] = (
+                    f"commentary/analysis ({why}) — not searched by design")
+                c["suggestion"] = (
+                    f"Narrative context (commentary/analysis: {why}): states "
+                    "no single checkable fact — kept visible for transparency.")
+                break
+
+
 def classify_prose(llm, claims, progress=None):
     """LLM triage of prose claims: FACTUAL (an outside source could document
     it) vs COMMENT (author's voice: interpretation, emotion, transition).

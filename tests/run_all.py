@@ -9,7 +9,8 @@ PY = sys.executable
 TESTS = ["test_units.py", "run_eval.py", "test_web_guard.py", "test_diff.py",
          "test_robustness.py", "test_webapp.py", "test_single_server.py",
          "test_subject_guard.py", "test_queries.py", "test_venue_guard.py",
-         "test_compound.py", "test_prose_retrieval.py"]
+         "test_compound.py", "test_prose_retrieval.py",
+         "test_narrative_floor.py"]
 
 # The main gates are OFFLINE and must stay that way: a corpus verdict is
 # documented as deterministic, and the Jev subject fallback is a network call

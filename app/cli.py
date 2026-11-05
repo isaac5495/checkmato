@@ -9,7 +9,7 @@ from . import checks
 from .byos import (apply_byos, footnote_audit, write_audit,
                    write_corrections)
 from .corpus import Corpus
-from .enrich import classify_prose, enrich, mark_narrative
+from .enrich import classify_prose, enrich, mark_commentary, mark_narrative
 from .extract import extract_claims, read_doc
 from .judge import judge
 from .library import Library, check_manifest
@@ -131,6 +131,9 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     # eligibility (deterministic floor first: no LLM needed): headings and
     # questions assert nothing checkable — a human checker never opens them
     mark_narrative(claims, doc.get("heading_paras") or ())
+    # commentary/analysis floor (no LLM needed): "38年来…", "我们将深入剖析…",
+    # "从来不是…而是…" assert no single checkable fact and must not be searched
+    mark_commentary(claims)
     # budgets SCALE with the document's actual needs — a 6800-word case study
     # gets the same rigor per paragraph as a 200-word blurb, just more time
     budgets = est.scaled_budgets(_run_stats(doc, corpus, claims),
