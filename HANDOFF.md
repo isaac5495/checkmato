@@ -1,16 +1,16 @@
 # CheckMato — Handoff
 
-Status: 2026-11-05 · W1.2 checkpoint (local, not pushed) · all gates green.
+Status: 2026-11-05 · W1.3 checkpoint (local, not pushed) · all gates green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
-retrieval) and W1.2 (commentary eligibility) are done; W1.3 (claim unit /
-multi-passage), W1.4 (semantic prose), W3 (citation lane), W4 (scanned PDFs)
-and W6 (product surface) remain open. Written for whoever picks this up next (AI session or human) so today's
+retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
+are done; W1.4 (semantic prose), W3 (citation lane), W4 (scanned PDFs) and
+W6 (product surface) remain open. Written for whoever picks this up next (AI session or human) so today's
 decisions don't get re-litigated.
 Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
 ## Repo state (2026-11-05)
 
-- `main` is two local commits ahead of `origin/main`; the W1.1/W1.2
+- `main` is three local commits ahead of `origin/main`; the W1.1/W1.2/W1.3
   checkpoints are not pushed. The only untracked file is
   `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
   document — do not add it). `.opencode` is ignored by the tooling.
@@ -19,16 +19,41 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
   0 contradicted, ≤ **$0.0405**. DeepSeek bills successful requests only
   ($0.00075 each); page deep-reads are direct HTTP and free.
-- Next session starts with **W1.3** (claim unit + multi-passage), then W1.4
-  (`app/nli.py` behind `--semantic`). W1.1 prose retrieval and W1.2
-  commentary eligibility landed 2026-11-05; prose still stays honestly
-  `unverified` until W1.4, so the 90% target is still unreachable.
-  Deterministic leftovers and the parked ideas are in `IMPROVEMENT_PLAN.md`
-  §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (13 suites) plus `test_byos.py` (48),
+- Next session starts with **W1.4** (`app/nli.py` behind `--semantic`), now
+  that W1.1 retrieval, W1.2 commentary and W1.3 claim units landed 2026-11-05.
+  Prose still stays honestly `unverified` until W1.4, so the 90% target is
+  still unreachable. Deterministic leftovers and the parked ideas are in
+  `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
+- Verification set: `tests\run_all.py` (14 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-05 — W1.3 claim units, fragments, multi-leads (code changed)
+
+The private eval's E case (c321) started at "时，总结出了…" because a closing
+quote split the sentence; the flat 446-row run also counted 94 footnote/URL
+structure rows as claims.
+
+- `app/extract.py`: `_sentences()` rejoins a continuation clause after a
+  closing quote/comma. `_assign_sentence_units()` adds `sentence_id`,
+  `sentence_context`, `slot_kind`, `is_primary`, `sentence_claim_count`,
+  `fragment_of_previous` and `parent_sentence`. Numeric/quote rows remain slots
+  of the sentence; per-figure verdicts are untouched.
+- `app/cli.py`: `_query` uses the joined sentence; citation/URL/placeholder
+  rows get `slot_kind="structure"`; meta and the CLI report
+  `sentences / claims / structure`.
+- `app/byos.py`: prose claims keep the top 3 `lead_candidates`; the primary
+  lead is still a lead, never evidence.
+- `app/judge.py` / `app/enrich.py`: event/name/speaker context uses the joined
+  sentence for fragments.
+- `app/report.py`: §7 records carry the sentence-unit fields; report.md shows
+  "Sentences / claims" and other leads.
+- `tests/test_claim_units.py`: 11 synthetic assertions; `test_prose_retrieval`
+  extended to 11 (multi-fact leads); `run_all` is now 14 suites.
+- Private KS run: **268 sentences / 347 claims / 94 structure** (was 446 flat
+  findings). c321 is now one full sentence with 2 slots (no orphan `时，`);
+  c314/c315 each carry 3 lead candidates; 6 fragments were attached.
 
 ## 2026-11-05 — W1.2 commentary eligibility (code changed)
 

@@ -44,6 +44,13 @@ def to_record(x):
             "end": x.get("span", [0, 0])[1]},
         "quote": x["raw"],
         "context": x.get("sentence", ""),
+        "sentence_id": x.get("sentence_id", ""),
+        "sentence_context": x.get("context_sentence", ""),
+        "slot_kind": x.get("slot_kind", ""),
+        "is_primary": bool(x.get("is_primary", False)),
+        "sentence_claim_count": int(x.get("sentence_claim_count", 1)),
+        "fragment_of_previous": bool(x.get("fragment_of_previous", False)),
+        "lead_candidates": x.get("lead_candidates", []),
         "type": x["type"],
         "verdict": x["verdict"],
         "confidence": x.get("confidence", "n/a"),
@@ -129,6 +136,11 @@ def write_md(meta, findings, path):
                          "已完成核查的内容见下文；未核查项标注为“已取消”。可随时重新运行。"))
     lines.append(f"- {L('Document', '文档')}: {meta['words']} {L('words', '字')}, "
                  f"{meta['paras']} {L('paragraphs', '段')}, lang={meta['lang']}")
+    if meta.get("sentence_count") is not None:
+        lines.append(
+            f"- {L('Sentences / claims', '句子 / claim')}: "
+            f"{meta['sentence_count']} / {meta['claim_count']} "
+            f"({L('structure', '结构')} {meta.get('structure_count', 0)})")
     if meta.get("context") and meta["context"].get("subject"):
         ctx = meta["context"]
         origin = f" [origin: {ctx['origin_language']}] " if ctx.get("origin_language") else " "
@@ -206,7 +218,10 @@ def write_md(meta, findings, path):
             anchor = f"¶{x['para'] + 1}" if x.get("para") is not None else "—"
             lines.append(f"### {x['id']} — {x['type']} — {anchor}")
             lines.append("")
-            lines.append(f"> {x['sentence']}")
+            lines.append(f"> {x.get('sentence_context') or x['sentence']}")
+            if x.get("fragment_of_previous"):
+                lines.append(
+                    f"> *{L('continued from the previous sentence', '接上一句')}*")
             lines.append("")
             lines.append(f"- **{L('Claim item', '核查项')}:** `{x['raw']}`")
             lines.append(f"- **{L('Confidence', '置信度')}:** {x.get('confidence', 'n/a')}")
@@ -216,6 +231,12 @@ def write_md(meta, findings, path):
                 lines.append(
                     f"- **{L('Search yourself', '自行搜索')}:** "
                     + "  |  ".join(f"`{q}`" for q in x["manual_checks"]))
+            leads = x.get("lead_candidates") or []
+            if len(leads) > 1:
+                lines.append(
+                    f"- **{L('Other leads', '其他线索')}:** "
+                    + "  |  ".join(f"`{lead['fname']}:{lead['start']}`"
+                                   for lead in leads[1:]))
             _pl = provenance.render_md(provenance.explain(x, zh), zh)
             if len(_pl) > 1:
                 lines.append("")
@@ -299,6 +320,13 @@ def from_record(r):
     return {
         "id": r["claim_id"], "type": r["type"], "raw": r["quote"],
         "sentence": r.get("context", ""), "verdict": r["verdict"],
+        "sentence_id": r.get("sentence_id", ""),
+        "context_sentence": r.get("sentence_context", ""),
+        "slot_kind": r.get("slot_kind", ""),
+        "is_primary": bool(r.get("is_primary", False)),
+        "sentence_claim_count": int(r.get("sentence_claim_count", 1)),
+        "fragment_of_previous": bool(r.get("fragment_of_previous", False)),
+        "lead_candidates": r.get("lead_candidates", []),
         "confidence": r.get("confidence", "n/a"),
         "evidence": r.get("evidence", []),
         "suggestion": r.get("notes", ""),

@@ -200,6 +200,26 @@ def _docx_footnote_anchors(path):
     return out
 
 
+_CONTINUATION = re.compile(
+    r"^(?:时|后|之前|之后|同时|此外|因此|然而|但|而|并|其中|这|其|该)[，,、]")
+_CLOSERS = ("」", "』", "”", '"', "）", ")", "，", ",", "——", "—")
+
+
+def _sentences(para):
+    """Sentence spans, with a continuation clause rejoined when the splitter
+    fired on a closing quote/comma. `...不倒」时，总结出了...` is ONE sentence;
+    a claim starting at `时，` has lost its subject and time."""
+    out = []
+    for sent, off in tp.sentences_spans(para):
+        s = sent.strip()
+        if out and _CONTINUATION.match(s) and out[-1][0].rstrip().endswith(_CLOSERS):
+            prev, poff = out[-1]
+            out[-1] = (prev + sent, poff)
+        else:
+            out.append((sent, off))
+    return out
+
+
 def extract_claims(paragraphs):
     """Deterministic claim extraction: every factual assertion worth checking.
 
@@ -219,7 +239,7 @@ def extract_claims(paragraphs):
         })
 
     for pidx, para in enumerate(paragraphs):
-        for sent, off in tp.sentences_spans(para):
+        for sent, off in _sentences(para):
             for m in tp.QUOTE_RE.finditer(sent):
                 add("quote", m.group(1), None, None, sent, pidx,
                     (m.start(1) + off, m.end(1) + off))
@@ -240,6 +260,7 @@ def extract_claims(paragraphs):
         seen.add(key)
         deduped.append(c)
     _finalize_anchors(deduped, paragraphs)
+    _assign_sentence_units(deduped, paragraphs)
     return deduped
 
 
@@ -261,7 +282,7 @@ def _inject_sentences(paragraphs, claims, add):
         covered.setdefault(c["para"], []).append(tuple(c["span"]))
     for pidx, para in enumerate(paragraphs):
         spans = covered.get(pidx, [])
-        for sent, off in tp.sentences_spans(para):
+        for sent, off in _sentences(para):
             if len(sent) < 30 or not any(ch.isalpha() for ch in sent):
                 continue
             for part, start, end in split_compound(sent):
@@ -301,3 +322,69 @@ def _finalize_anchors(claims, paragraphs):
             c["anchored"] = para[i:i + len(c["raw"])] == c["raw"]
         else:
             c["anchored"] = False
+
+
+_SLOT_KIND = {
+    "year": "number", "amount": "number", "pct": "number",
+    "count": "number", "fx": "number", "timeline": "number",
+    "quote": "quote", "url": "structure", "placeholder": "structure",
+    "event": "event",
+}
+
+
+def _assign_sentence_units(claims, paragraphs):
+    """Add the sentence-level unit model without changing the existing claim
+    rows. One sentence has one `sentence_id`; numeric/quote rows are slots of
+    that sentence; the first event row is its primary claim. A clause that
+    starts with a continuation marker and lost its parent is attached to the
+    previous sentence (parent_sentence + context_sentence), while `sentence`
+    and the raw span keep the hover contract.
+
+    The per-figure verdicts stay exactly as they are: this is grouping and
+    context, not a new verdict path.
+    """
+    units = []
+    for pidx, para in enumerate(paragraphs):
+        row = []
+        prev = None
+        for si, (sent, off) in enumerate(_sentences(para)):
+            sid = f"s{pidx:04d}-{si:03d}"
+            frag = bool(_CONTINUATION.match(sent.strip())) and prev is not None
+            row.append({"sid": sid, "start": off, "end": off + len(sent),
+                        "sentence": sent, "frag": frag, "prev": prev})
+            prev = (sid, sent)
+        units.append(row)
+
+    for c in claims:
+        pidx = c["para"]
+        start = c["span"][0]
+        unit = next((u for u in units[pidx]
+                     if u["start"] <= start < u["end"]), None)
+        if unit is None:
+            # paragraph-level placeholder/URL: visible, but structure
+            c["sentence_id"] = f"s{pidx:04d}-p"
+            c["context_sentence"] = c.get("sentence", "")
+            c["fragment_of_previous"] = False
+            c["parent_sentence"] = ""
+        elif unit["frag"]:
+            c["sentence_id"] = unit["prev"][0]
+            c["parent_sentence"] = unit["prev"][1]
+            c["context_sentence"] = unit["prev"][1] + unit["sentence"]
+            c["fragment_of_previous"] = True
+        else:
+            c["sentence_id"] = unit["sid"]
+            c["parent_sentence"] = ""
+            c["context_sentence"] = unit["sentence"]
+            c["fragment_of_previous"] = False
+        c["slot_kind"] = _SLOT_KIND.get(c["type"], c["type"])
+
+    groups = {}
+    for c in claims:
+        groups.setdefault(c["sentence_id"], []).append(c)
+    for group in groups.values():
+        primary = next((c for c in group if c["slot_kind"] == "event"), None)
+        if primary is None:
+            primary = group[0]
+        for c in group:
+            c["is_primary"] = c is primary
+            c["sentence_claim_count"] = len(group)

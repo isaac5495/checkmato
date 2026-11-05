@@ -293,8 +293,9 @@ def _check_number(claim, corpus):
     cur_clash = []
     off_event = []
     mod = webmod.modifier(claim)
-    claim_event = tp.event_of(tp.normalize(claim["sentence"]))
-    claim_names = tp.name_tokens(claim["sentence"])
+    context = claim.get("context_sentence") or claim["sentence"]
+    claim_event = tp.event_of(tp.normalize(context))
+    claim_names = tp.name_tokens(context)
     for shared_n, fname, lineno, raw, shared, precision in lines:
         # A value match is not a subject match: another subject's revenue must
         # never be supported by this subject's line. If the claim names a
@@ -569,7 +570,8 @@ def _check_quote(claim, corpus):
     ratio, fname, lineno, raw, precision = corpus.best_quote_match(claim["raw"])
     ev = [_evidence(fname, lineno, raw, precision=precision, corpus=corpus)] if fname else []
     # attribution check: a genuine quote can still be pinned to the wrong person
-    doc_speaker = tp.speaker_before_quote(claim["sentence"])
+    doc_speaker = tp.speaker_before_quote(
+        claim.get("context_sentence") or claim["sentence"])
     src_speaker = tp.speaker_before_quote(raw) if fname else None
     mis = tp.names_conflict(doc_speaker, src_speaker)
     if mis and ratio >= corp.PARAPHRASE_CUT:

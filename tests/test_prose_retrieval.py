@@ -30,8 +30,10 @@ def main():
             "# Aurora history\n\n"
             "The founder's chronic liver illness recurred three times.\n"
             "He moved his computer into the hospital room and kept coding.\n\n"
+            "# Canteen\n\n"
             "The canteen served four meals a day until midnight.\n"
             "The night-shift cook always added a fried egg.\n\n"
+            "# Annual meeting\n\n"
             "The annual meeting was held in the canteen.\n"
             "The founders wore chef coats and served the staff.\n",
             encoding="utf-8")
@@ -81,6 +83,21 @@ def main():
            f"the lead points at the right source ({claim['suggestion'][:80]})")
         ok("Prose claim" in claim["suggestion"],
            "the suggestion still says this is a lead, not proof")
+
+        # one sentence can need facts from different passages: keep all leads
+        combo = {
+            "id": "p2", "type": "event", "raw": "liver illness + canteen",
+            "sentence": ("The founder's liver illness recurred three times; "
+                         "the canteen served four meals a day."),
+            "verdict": "unverified", "confidence": "low",
+            "evidence": [], "suggestion": "",
+        }
+        apply_byos([combo], lib, "sources_only")
+        leads = combo.get("lead_candidates") or []
+        ok(len(leads) >= 2,
+           f"a multi-fact sentence keeps several leads ({len(leads)})")
+        ok(all({"fname", "start", "end", "text"} <= set(x) for x in leads),
+           "each lead carries a locator and a text snippet")
 
     print(f"PROSE RETRIEVAL TESTS: PASS ({n} assertions)")
     return 0

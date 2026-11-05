@@ -104,7 +104,9 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         if ent not in doc_entities:
             doc_entities.append(ent)
     for c in claims:
-        c["_query"] = query_text(c.get("sentence") or "", _subject, _groups)
+        c["_query"] = query_text(
+            c.get("context_sentence") or c.get("sentence") or "",
+            _subject, _groups)
         c["_doc_entities"] = doc_entities
     judge(claims, corpus, progress=_p)
     if lib:
@@ -117,6 +119,7 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     for c in claims:
         if c.get("para") in cite_idx:
             c["citation"] = True
+            c["slot_kind"] = "structure"
             if c["type"] != "url":
                 # rule 4: footnote text is the SOURCE, not a claim. Judging a
                 # citation's own year against the library invents pending items.
@@ -203,6 +206,9 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     fn_rows = footnote_audit(doc, lib) if (lib and footnotes) else []
     anchored = [x for x in findings if x.get("para") is not None]
     anchor_ok = sum(1 for x in anchored if x.get("anchored"))
+    structure = [c for c in claims if c.get("slot_kind") == "structure"]
+    sentence_ids = {c.get("sentence_id") for c in claims
+                    if c.get("slot_kind") != "structure" and c.get("sentence_id")}
 
     meta = {
         "doc": Path(doc_path).name,
@@ -211,6 +217,9 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         "engine": _engine_label(use_web, llm, web, lib=lib, mode=mode),
         "words": _word_count(doc["paragraphs"]),
         "paras": len(doc["paragraphs"]),
+        "sentence_count": len(sentence_ids),
+        "claim_count": len(claims) - len(structure),
+        "structure_count": len(structure),
         "lang": detect_language(doc["paragraphs"]),
         "corpus_files": len(corpus.files),
         "corpus_lines": len(corpus),
@@ -457,6 +466,8 @@ def main(argv=None):
     for x in findings:
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
     print(f"CheckMato — {meta['doc']} ({meta['words']} words, {len(findings)} findings)")
+    print(f"  sentences      {meta['sentence_count']} · claims {meta['claim_count']} "
+          f"(structure {meta['structure_count']})")
     for v in ("contradicted", "internal_conflict", "needs_fix", "structure",
               "misattributed", "paraphrase_flag", "conflicting", "unverified",
               "deferred_web", "narrative", "supported"):

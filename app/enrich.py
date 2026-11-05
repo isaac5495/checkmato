@@ -99,7 +99,9 @@ def classify_prose(llm, claims, progress=None):
         if llm.exhausted:
             break
         batch = todo[k:k + 24]
-        rows = [{"id": c["id"], "text": c["sentence"][:200]} for c in batch]
+        rows = [{"id": c["id"],
+                 "text": (c.get("context_sentence") or c["sentence"])[:200]}
+                for c in batch]
         raw = llm.chat(
             "You triage sentences from a document for a fact-checker. A sentence "
             "is FACTUAL if it asserts something an outside source could document "
@@ -164,11 +166,12 @@ def _apply_narrative(claim, web):
     word overlap (that manufactures false greens). With an LLM it gets proper
     planned natural-language queries in the deep pass; here (LLM unavailable)
     it gets a topic-anchored probe + the exact query for the user to try."""
-    sl = claim["sentence"].lower()
+    sl = (claim.get("context_sentence") or claim["sentence"]).lower()
     primary = next((e for e in web.raw_entities
                     if e and tp.normalize(e) in tp.normalize(sl)),
                    web.raw_entities[0] if web.raw_entities else "")
-    phr = tp.rare_phrase(claim.get("raw") or claim["sentence"], 5)
+    phr = tp.rare_phrase(
+        claim.get("raw") or claim.get("context_sentence") or claim["sentence"], 5)
     if not phr.strip():  # no distinctive phrasing = entity-only query;
         # searching "Kingsoft" alone wastes a slot and reads as broken advice
         claim["_skip_reason"] = "no query-able content beyond the entity name"
