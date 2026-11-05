@@ -1,31 +1,58 @@
 # CheckMato — Handoff
 
-Status: 2026-11-05 · HEAD `15768d5` pushed to `origin/main` · all gates green.
-BYOS + English-first + DeepSeek Search are the current engine; W1 (semantic
-prose), W3 (citation lane), W4 (scanned PDFs) and W6 (product surface) remain
-open. Written for whoever picks this up next (AI session or human) so today's
+Status: 2026-11-05 · W1.1 checkpoint (local, not pushed) · all gates green.
+BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
+retrieval) is done; W1.2 (eligibility), W1.3 (claim unit / multi-passage),
+W1.4 (semantic prose), W3 (citation lane), W4 (scanned PDFs) and W6 (product
+surface) remain open. Written for whoever picks this up next (AI session or human) so today's
 decisions don't get re-litigated.
 Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
 ## Repo state (2026-11-05)
 
-- `main` == `origin/main` at `15768d5` ("BYOS + English-first engine, DeepSeek
-  search, W2.5/W5 fixes"); this status update is the next commit. The only
-  untracked file is `Ledgerline_New_Business_Proposal.docx`, deliberately left
-  out (course document — do not add it). `.opencode` is ignored by the tooling.
+- `main` is one local commit ahead of `origin/main`; the W1.1 checkpoint
+  (prose retrieval) is not pushed. The only untracked file is
+  `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
+  document — do not add it). `.opencode` is ignored by the tooling.
 - Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
   5 searches / 1 page = 4.9 s, 9 supported, ≤ **$0.00375**; full depth =
   54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
   0 contradicted, ≤ **$0.0405**. DeepSeek bills successful requests only
   ($0.00075 each); page deep-reads are direct HTTP and free.
-- Next session starts with **W1** (`app/nli.py` behind `--semantic`): until it
-  lands, prose stays honestly `unverified` and the 90% target is unreachable.
+- Next session starts with **W1.2** (eligibility/narrative), then W1.3
+  (claim unit + multi-passage), then W1.4 (`app/nli.py` behind `--semantic`).
+  W1.1 prose retrieval landed 2026-11-05; prose still stays honestly
+  `unverified` until W1.4, so the 90% target is still unreachable.
   Deterministic leftovers and the parked ideas are in `IMPROVEMENT_PLAN.md`
   §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (11 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (12 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-05 — W1.1 prose retrieval (code changed)
+
+The 20-item prose eval (private KS material, not committed) found 11/20 search
+misses, 5/20 narrative, 2/20 missed support, 1/20 library-empty, 1/20
+segmentation, and **0/20 pure semantic-model failures**. Retrieval was the
+bottleneck, not NLI.
+
+- `app/corpus.py`: new `find_literal_lines()` (exact substring / Ctrl+F lane)
+  and `find_prose_candidates()` (BM25 + the existing bounded field rerank +
+  rare-token passages + literal lines; scores unique terms, multi-term
+  coverage, source-title matches and the longest shared phrase). `norm_lines`
+  is cached once per Corpus.
+- `app/byos.py`: event/sentence leads now use `find_prose_candidates()` instead
+  of `tokens(sentence)[:8]` + `find_passages(min_shared=2)`. Prose verdicts
+  stay `unverified`; only the lead changes (a lead, never proof).
+- `tests/test_prose_retrieval.py`: 9 synthetic assertions, no KS material; added
+  to `run_all` (12 suites).
+- Private check (not committed): the 11 B cases went from 6/11 to **11/11**
+  correct source file in the top 3; 9/10 manually-labelled sections are in the
+  top 3 and 7/10 are top-1. **c319** (canteen/villa) still ranks the right
+  section #7 — a same-company/different-section case that needs a second pass
+  or W1.4, not a private-case keyword hack. No rule was tuned to KS text; the
+  synthetic fixture covers the general multi-term pattern.
 
 ## 2026-11-02 — compound claims, venue guard, DeepSeek-only search
 

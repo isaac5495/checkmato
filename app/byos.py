@@ -140,10 +140,10 @@ def apply_byos(claims, library, mode):
             # Saying "no source covers it" would be a false claim: nothing was
             # searched. Keep it unverified and hand the reader the nearest
             # passage as a LEAD, explicitly not as proof.
-            kws = list(tp.tokens(c.get("sentence") or ""))[:8]
-            near = library.corpus.find_passages(kws, min_shared=2, top=1)
-            if near:
-                p = near[0]
+            cands = library.corpus.find_prose_candidates(
+                c.get("sentence") or "", top=3)
+            if cands:
+                p = cands[0]
                 c["suggestion"] = (
                     "Prose claim — no deterministic check was run. Nearest "
                     f"passage ({p['fname']}:{p['start']}) is a lead, not "

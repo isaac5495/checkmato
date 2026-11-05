@@ -48,6 +48,29 @@ def _windowed_ratio(short, long):
     return best
 
 
+def _longest_common_phrase(a, b, min_len=3, max_len=12):
+    """Length of the longest shared CJK/Latin phrase (>= min_len).
+
+    A bag of rare bigrams can still rank a paragraph that merely shares many
+    common pieces. A contiguous 4-6 character phrase is the thing a human
+    Ctrl+F actually matches, so it gets its own bounded bonus.
+    """
+    a, b = tp.normalize(a), tp.normalize(b)
+    if not a or not b:
+        return 0
+    if len(a) > len(b):
+        a, b = b, a
+    for n in range(min(max_len, len(a)), min_len - 1, -1):
+        for i in range(len(a) - n + 1):
+            s = a[i:i + n]
+            if not any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
+                       for ch in s):
+                continue
+            if s in b:
+                return n
+    return 0
+
+
 def sniff_bytes(raw):
     """Decode bytes robustly: strict UTF-8 first, then charset detection
     (real-world .txt sources are GBK/Big5/latin-1), finally lossy UTF-8."""
@@ -125,6 +148,10 @@ class Corpus:
                     if skip and skip(p):
                         continue
                     self._ingest_any(p)
+        # normalized line text for the literal (Ctrl+F) lane; built once so a
+        # document with hundreds of prose claims does not re-normalize 6k lines
+        # per claim
+        self.norm_lines = [tp.normalize(line[2]) for line in self.lines]
         self.passages = []
         self._build_passages()
         self.value_index = {}
@@ -370,6 +397,133 @@ class Corpus:
             if len(shared) >= min_shared:
                 scored.append((len(shared), fname, lineno, raw, sorted(shared), precision))
         scored.sort(key=lambda r: (-r[0], r[1], r[2]))
+        return scored[:top]
+
+    def find_literal_lines(self, terms, top=20):
+        """Exact substring lane: the Ctrl+F a human would run.
+
+        Token search splits CJK into bigrams, so a phrase like
+        "文化不是虚无缥缈" can be missed when its pieces are common. This lane
+        checks the normalized line text for each term verbatim, ranks by
+        rarity x length, and is deterministic/offline. It is a *lead*
+        retriever only; it never produces a verdict.
+        """
+        terms = [tp.normalize(t) for t in dict.fromkeys(terms or ()) if t]
+        terms = [t for t in terms if len(t) >= 2]
+        if not terms:
+            return []
+        cand = set()
+        for t in terms:
+            cand.update(self.posting.get(t, ()))
+        ids = cand if cand else range(len(self.lines))
+        scored = []
+        for idx in ids:
+            fname, lineno, raw, _toks, precision = self.lines[idx]
+            norm = self.norm_lines[idx]
+            hits = [t for t in terms if t in norm]
+            if not hits:
+                continue
+            score = sum((1.0 / max(1, self.df.get(t, 1))) * min(len(t), 8)
+                        for t in hits)
+            scored.append((score, fname, lineno, raw, hits, precision))
+        scored.sort(key=lambda r: (-r[0], r[1], r[2]))
+        return scored[:top]
+
+    def _passage_for_line(self, fname, lineno):
+        for p in self.passages:
+            if (p["fname"] == fname
+                    and p["start"] <= lineno <= p["end"]):
+                return p
+        return None
+
+    def find_prose_candidates(self, text, top=5):
+        """Rank passages/lines for a prose claim (a lead, never a verdict).
+
+        Three lanes merged, because each fails differently:
+        - BM25 passages: word overlap, but common words dilute the query;
+        - rare-token passages: subject keywords, not the first 8 tokens;
+        - exact substring lines: the Ctrl+F lane (names, quotes, slogans).
+        Exact/rare evidence is weighted above BM25; every returned item keeps
+        its original fname/start/end, so evidence locators never move.
+        """
+        text = (text or "").strip()
+        if not text:
+            return []
+        rare = self.rare_tokens(text, k=12)
+        if not rare:
+            return []
+
+        pool, seen = [], set()
+
+        def add(base, p, lane):
+            key = (p.get("fname"), p.get("start"))
+            if key in seen:
+                return
+            seen.add(key)
+            pool.append((float(base), p, lane))
+
+        if self.bm25.ok:
+            bm_pool = self.bm25.search(text, top=max(top * 8, 24))
+            # use the same bounded filename/heading rerank as find_bm25_passages;
+            # a source whose title names the claim's subject should win a
+            # near-tie against a better-worded but off-subject paragraph
+            bm_scores = {id(p): s for s, p in bm_pool}
+            for p in _field_rerank(set(tp.tokens(text)), bm_pool):
+                add(bm_scores.get(id(p), 0.0), p, "bm25")
+        for p in self.find_passages(rare, min_shared=2, top=12):
+            add(0.0, p, "rare")
+        for _s, fname, lineno, raw, _hits, precision in self.find_literal_lines(
+                rare, top=24):
+            p = self._passage_for_line(fname, lineno)
+            if p is not None:
+                add(0.0, p, "literal")
+            else:
+                add(0.0, {"fname": fname, "start": lineno, "end": lineno,
+                          "text": raw, "tokens": tp.tokens(raw),
+                          "precision": precision}, "literal")
+
+        claim_norm = tp.normalize(text)
+        scored = []
+        for base, p, lane in pool:
+            ptoks = p.get("tokens") or set()
+            ptext = tp.normalize(p.get("text") or "")
+            rare_hits = [t for t in rare if t in ptoks]
+            lit_hits = [t for t in rare if len(t) >= 2 and t in ptext]
+            rare_score = sum(1.0 / max(1, self.df.get(t, 1))
+                             for t in rare_hits)
+            lit_score = sum(1.0 / max(1, self.df.get(t, 1))
+                            for t in lit_hits)
+            # A term that occurs once in the whole library is the closest
+            # thing to the reader's Ctrl+F word ("肝病", "分貝儀"). A generic
+            # term ("公司") must not get the same treatment.
+            unique_hits = [t for t in rare_hits if self.df.get(t, 0) == 1]
+            # Multi-term coverage: the awards/canteen sentence shares
+            # "保安" AND "食堂"; a paragraph that shares only one common
+            # word should not win.
+            coverage = len(set(rare_hits))
+            phrase_len = _longest_common_phrase(claim_norm, ptext)
+            # A source whose filename names the claim's subject (金山) is a
+            # better lead than a same-topic paragraph from another company
+            # (西山志). Soft bonus only: it can break a near-tie, not invent
+            # evidence, and it never changes fname/start.
+            title_tokens = p.get("title_tokens") or _field_tokens(
+                p.get("fname") or "")
+            title_hits = list(set(tp.tokens(text)) & set(title_tokens))
+            # exact phrase > unique term > multi-term coverage > title match
+            # > BM25 base. All are retrieval signals, never evidence.
+            score = (base + 4.0 * rare_score + 8.0 * lit_score
+                     + 18.0 * len(unique_hits) + 3.0 * min(coverage, 6)
+                     + 6.0 * len(title_hits)
+                     + 0.5 * phrase_len * phrase_len)
+            item = dict(p)
+            item["score"] = round(score, 6)
+            item["why"] = {"lane": lane, "rare": rare_hits[:6],
+                           "literal": lit_hits[:6], "unique": unique_hits[:4],
+                           "coverage": coverage, "title": title_hits[:4],
+                           "phrase": phrase_len}
+            scored.append(item)
+        scored.sort(key=lambda p: (-p["score"], p.get("fname") or "",
+                                   p.get("start") or 0))
         return scored[:top]
 
     def best_quote_match(self, quote):
