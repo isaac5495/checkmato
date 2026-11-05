@@ -1,10 +1,31 @@
 # CheckMato — Handoff
 
-Status: 2026-09-06 (M1.8) · all gates green · web tool live · Brave Search key
-in `.env` (Google CSE attempted: Google closed JSON-API signup, keys disabled).
-Written for whoever picks this up next (AI session or human) so today's
+Status: 2026-11-05 · HEAD `15768d5` pushed to `origin/main` · all gates green.
+BYOS + English-first + DeepSeek Search are the current engine; W1 (semantic
+prose), W3 (citation lane), W4 (scanned PDFs) and W6 (product surface) remain
+open. Written for whoever picks this up next (AI session or human) so today's
 decisions don't get re-litigated.
 Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
+
+## Repo state (2026-11-05)
+
+- `main` == `origin/main` at `15768d5` ("BYOS + English-first engine, DeepSeek
+  search, W2.5/W5 fixes"); this status update is the next commit. The only
+  untracked file is `Ledgerline_New_Business_Proposal.docx`, deliberately left
+  out (course document — do not add it). `.opencode` is ignored by the tooling.
+- Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
+  5 searches / 1 page = 4.9 s, 9 supported, ≤ **$0.00375**; full depth =
+  54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
+  0 contradicted, ≤ **$0.0405**. DeepSeek bills successful requests only
+  ($0.00075 each); page deep-reads are direct HTTP and free.
+- Next session starts with **W1** (`app/nli.py` behind `--semantic`): until it
+  lands, prose stays honestly `unverified` and the 90% target is unreachable.
+  Deterministic leftovers and the parked ideas are in `IMPROVEMENT_PLAN.md`
+  §12 and the "Out-of-scope findings" below.
+- Verification set: `tests\run_all.py` (11 suites) plus `test_byos.py` (48),
+  `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
+  `test_byos_offline.py` (0 connections), `run_eval_en.py` and
+  `run_eval_holdout.py`.
 
 ## 2026-11-02 — compound claims, venue guard, DeepSeek-only search
 
