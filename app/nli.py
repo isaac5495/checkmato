@@ -21,6 +21,7 @@ The local MiniCheck/Erlangshen NLI backend from IMPROVEMENT_PLAN §W1 can replac
 `judge()` later without changing the contract or the call sites.
 """
 import json
+import re
 
 from . import textproc as tp
 
@@ -99,6 +100,83 @@ def _web_evidence(claim, web, k=MAX_WEB):
 def _evidence_for(claim, corpus, web):
     ev = _local_evidence(claim, corpus) + _web_evidence(claim, web)
     return ev[:MAX_LOCAL + MAX_WEB]
+
+
+_LIST_TRIGGER = re.compile(r"(?:包括|包含|分为|如下|：|:|——|—)(.*)$")
+_LIST_SPLIT = re.compile(r"[、，,；;]\s*")
+
+
+def _list_items(text):
+    """Elements of an explicit list ('包括 A、B、C') — the unit of a partial
+    support check. Returns [] when the sentence has no list trigger."""
+    m = _LIST_TRIGGER.search(text or "")
+    if not m:
+        return []
+    out = []
+    for part in _LIST_SPLIT.split(m.group(1)):
+        part = part.strip(" 。.!?？；;：:、\"'“”‘’「」")
+        if 2 <= len(part) <= 16 and not re.fullmatch(r"[\d.%]+", part):
+            out.append(part)
+    return list(dict.fromkeys(out))
+
+
+def _partial_note(claim, evidence_text):
+    """Most elements present, not all: a partial, not a green.
+
+    Example: the claim lists 4 products and the source names 3. The contract
+    stays supported/unverified (user decision A); the note says exactly which
+    element is missing, so the reader never sees a false green.
+    """
+    items = _list_items(_ctx(claim))
+    if len(items) < 3:
+        return None
+    text = tp.normalize(evidence_text)
+    found = [x for x in items if tp.normalize(x) in text]
+    missing = [x for x in items if x not in found]
+    if 2 <= len(found) < len(items):
+        return {"found": len(found), "total": len(items), "missing": missing}
+    return None
+
+
+_CJK_ORG = re.compile(
+    r"[\u4e00-\u9fff]{2,6}(?:科技|公司|集团|企业|银行|大学|学院|"
+    r"研究院|资本|基金|控股|实业|网络|软件|云|健康|医疗|证券|保险|"
+    r"汽车|能源|传媒)")
+
+
+def _claim_entities(claim):
+    text = _ctx(claim)
+    ents = set(tp.detect_entities([text]) + tp.detect_cjk_entities([text]))
+    # detect_cjk_entities only accepts repeated/quoted names; a one-off
+    # '华光科技与恒宇科技' still names two subjects, so scan suffix-anchored
+    # organisations directly.
+    ents |= set(_CJK_ORG.findall(text))
+    return sorted({e for e in ents if len(e) >= 3}, key=len, reverse=True)
+
+
+def _multi_entity_note(claim, evidence_text):
+    """Evidence names one subject, the sentence names two: not a support.
+
+    'Acme and Orion opened an office' cannot be settled by an Acme-only page.
+    """
+    ents = _claim_entities(claim)
+    if len(ents) < 2:
+        return None
+    text = tp.normalize(evidence_text)
+    present = [e for e in ents if tp.normalize(e) in text]
+    missing = [e for e in ents if e not in present]
+    if present and missing:
+        return {"present": present, "missing": missing}
+    return None
+
+
+def _mark_partial(claim, note):
+    claim["verdict"] = "unverified"
+    claim["confidence"] = "low"
+    claim["_partial"] = note
+    claim["suggestion"] = (
+        f"Partial support: {note['found']}/{note['total']} elements found; "
+        f"missing: {', '.join(note['missing'])}. Not counted as supported.")
 
 
 def _prompt(items):
@@ -183,6 +261,15 @@ def judge(llm, claims, corpus=None, web=None, progress=None,
         return 0
 
     by_id = {c["id"]: c for c, _ev in todo}
+    partial_by_id, multi_by_id = {}, {}
+    for c, ev in todo:
+        evidence_text = " ".join(e["text"] for e in ev)
+        pn = _partial_note(c, evidence_text)
+        if pn:
+            partial_by_id[c["id"]] = pn
+        mn = _multi_entity_note(c, evidence_text)
+        if mn:
+            multi_by_id[c["id"]] = mn
     rescued = 0
     for start in range(0, len(todo), batch):
         if llm.exhausted:
@@ -222,8 +309,35 @@ def judge(llm, claims, corpus=None, web=None, progress=None,
             c = by_id[cid]
             if c["verdict"] != "unverified":
                 continue
+            if multi_by_id.get(cid):
+                note = multi_by_id[cid]
+                c["_multi_entity"] = note
+                c["suggestion"] = (
+                    f"Evidence covers only {', '.join(note['present'])}; the "
+                    f"sentence also names {', '.join(note['missing'])}. Not "
+                    "counted as supported — split the sentence or find a "
+                    "source covering both.")
+                continue
+            if partial_by_id.get(cid):
+                _mark_partial(c, partial_by_id[cid])
+                continue
             _apply(c, evs[i - 1], quote, str(d.get("note") or "")[:160])
             rescued += 1
+    # Even when the model does not support, leave the reader the partial /
+    # multi-subject diagnosis instead of a bare "unverified".
+    for c, _ev in todo:
+        if c["verdict"] != "unverified":
+            continue
+        if multi_by_id.get(c["id"]):
+            note = multi_by_id[c["id"]]
+            c["_multi_entity"] = note
+            c["suggestion"] = (
+                f"Evidence covers only {', '.join(note['present'])}; the "
+                f"sentence also names {', '.join(note['missing'])}. Not "
+                "counted as supported — split the sentence or find a source "
+                "covering both.")
+        elif partial_by_id.get(c["id"]):
+            _mark_partial(c, partial_by_id[c["id"]])
     if rescued:
         _p({"stage": "semantic_done", "rescued": rescued,
             "item": f"{rescued} prose claims supported by a full-sentence semantic match"})

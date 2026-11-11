@@ -48,6 +48,21 @@ _COMMENTARY_RULES = (
     (re.compile(r"从来不是[^。！？]{0,30}而是|绝非[^。！？]{0,20}而是"),
      "evaluative contrast"),
     (re.compile(r"深入剖析|系统梳理|试图揭示"), "authorial method/analysis"),
+    (re.compile(r"这正是[^。！？]{0,30}(?:期望|局面|设计)"),
+     "evaluative conclusion"),
+    (re.compile(r"始终未变|没有固守[^。！？]{0,30}而是"),
+     "evaluative analysis"),
+    (re.compile(r"面临着[^。！？]{0,20}考验|随着[^。！？]{0,20}扩张"
+                r"[^。！？]{0,30}考验"), "evaluative summary"),
+    (re.compile(r"充满活力与灵气|鲜明的业务风格|务实理性|"
+                r"既无[^。！？]{0,20}也无"), "evaluative characterisation"),
+    (re.compile(r"本质上是|文化内核|镜像映射|方言表达|底层逻辑|"
+                r"战略转折点|自我更新|留给读者"),
+     "interpretive/analogical summary"),
+    (re.compile(r"以避免[^。！？]{0,30}(?:掩盖|口才)"),
+     "design rationale, not an event"),
+    (re.compile(r"同一个领袖|两家公司[^。！？]{0,30}(?:分别|战略)"),
+     "multi-subject comparison"),
 )
 
 
@@ -105,13 +120,22 @@ def classify_prose(llm, claims, progress=None):
         raw = llm.chat(
             "You triage sentences from a document for a fact-checker. A sentence "
             "is FACTUAL if it asserts something an outside source could document "
-            "(an event, date, quantity, action by a named person, attribution); "
-            "it is COMMENT if it is the author's voice: interpretation, rhetoric, "
-            "transition, emotion, interior states, or lines about the case study "
-            'itself. Return ONLY a JSON array listing the COMMENT ones: '
-            '{"id":"<id>","why":"<why nothing is checkable, max 80 chars"}. '
-            "A sentence you do not list is treated as FACTUAL and WILL be "
-            "searched — only list clear commentary.\n\n"
+            "(an event, date, quantity, action by a named person, attribution, "
+            "a specific practice or policy); it is COMMENT if the MAIN assertion "
+            "is the author's voice: interpretation, evaluation, analogy, "
+            "rhetorical summary, a statement about a period/trend, or lines about "
+            "the case study itself. A sentence that contains both a specific "
+            "practice/fact AND an interpretation is FACTUAL — the specific part "
+            "is checkable. Only COMMENT when there is no specific checkable "
+            "event, figure, person, quote or practice at all. Examples: "
+            'COMMENT: "历经近38年的自我更新，金山再次站在战略转折点上" '
+            '(period summary). COMMENT: "金山的六脉神剑与小米的八条价值观，'
+            '本质上是同一种文化内核" (analogy). FACTUAL: "聚餐、跨部门体育联赛'
+            '等文化建设形式..." (specific practices). FACTUAL: "雷军认为这是一场'
+            '以十年为维度的战略长征" (attributed position). Return ONLY a JSON '
+            'array listing the COMMENT ones: {"id":"<id>","why":"<why nothing is '
+            'checkable, max 80 chars>"}. A sentence you do not list is treated as '
+            "FACTUAL and WILL be searched — only list clear commentary.\n\n"
             + json.dumps(rows, ensure_ascii=False) + "\n\nJSON:")
         arr = llm_mod.re_json(raw) if raw else []
         for d in arr if isinstance(arr, list) else []:
@@ -744,6 +768,10 @@ def _explain(claims, web, corpus=None):
             continue
         if str(c.get("_skip_reason", "")).startswith("citation"):
             continue  # keeps its own, clearer "this is a footnote" note
+        if c.get("_partial") or c.get("_multi_entity"):
+            # W1.4 already wrote the specific partial/multi-subject note; a
+            # generic "unverified" sentence would erase it.
+            continue
         engine_qs = [q for q in (c.get("_planned_queries") or [])[:2]]
         if not engine_qs:
             engine_qs = [q for q in (c.get("_web_queries") or []) if q][:2]

@@ -130,6 +130,38 @@ def main():
     ok(nli.judge(llm, [c], corpus=corpus) == 0 and c["verdict"] == "unverified",
        "no LLM -> no semantic verdict")
 
+    # 8. Partial support: 3 of 4 listed elements found -> unverified + note,
+    # never a green (user decision A).
+    c = claim(raw="产品包括华光一、华光二、华光三、华光四。",
+              sentence="产品包括华光一、华光二、华光三、华光四。",
+              sentence_context="产品包括华光一、华光二、华光三、华光四。",
+              context_sentence="产品包括华光一、华光二、华光三、华光四。")
+    partial = "产品包括华光一、华光二、华光三。"
+    llm = FakeLLM([json.dumps([{
+        "id": "c1", "ev": 1, "verdict": "supported",
+        "quote": partial, "note": "three products" }])])
+    got = nli.judge(llm, [c], corpus=FakeCorpus([
+        {"fname": "products.md", "start": 1, "end": 1, "text": partial}]))
+    ok(got == 0 and c["verdict"] == "unverified", "partial is not a green")
+    ok(c.get("_partial") and c["_partial"]["missing"] == ["华光四"],
+       f"partial names the missing element ({c.get('_partial')})")
+    ok("3/4" in c.get("suggestion", ""), "partial note states the count")
+
+    # 9. Multi-subject: evidence covers Acme, sentence also names Orion ->
+    # not one checkable subject.
+    c = claim(raw="华光科技与恒宇科技签署了合作协议。",
+              sentence="华光科技与恒宇科技签署了合作协议。",
+              sentence_context="华光科技与恒宇科技签署了合作协议。",
+              context_sentence="华光科技与恒宇科技签署了合作协议。")
+    evidence = "华光科技签署了合作协议。"
+    llm = FakeLLM([json.dumps([{
+        "id": "c1", "ev": 1, "verdict": "supported",
+        "quote": evidence, "note": "one company" }])])
+    got = nli.judge(llm, [c], corpus=FakeCorpus([
+        {"fname": "deal.md", "start": 1, "end": 1, "text": evidence}]))
+    ok(got == 0 and c["verdict"] == "unverified", "one-subject evidence is not a green")
+    ok(c.get("_multi_entity"), "multi-subject diagnosis is kept")
+
     print(f"NLI TESTS: PASS ({n} assertions)")
 
 

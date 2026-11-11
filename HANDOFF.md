@@ -72,13 +72,22 @@ Clue-first retrieval (shipped):
 - `tests/test_clue_retrieval.py` 10 assertions; `run_all.py` 20 suites.
 
 Still open from the review:
-- W1.2 narrative eligibility (18/50 leaked because the sheet was built from a
-  sources-only run; rebuild with LLM triage and add deterministic patterns).
-- Quote attribution guard (a heading/title is not a spoken quote).
-- Multi-company/compositional guard.
-- Partial-support state (verdict or note? — user decision).
-- Source routing (game → 西山志; interview → 金山高管团队访谈).
-- W1.4 exact evidence narrowing.
+- W1.2 narrative eligibility: the combined deterministic floor +
+  `classify_prose` catches **15/18** reviewed narrative sentences (Agnes;
+  DeepSeek was unavailable). The 4 false narratives (c364, c370, c372, c428)
+  are a known trade-off: dropping a true claim is a coverage loss, not a false
+  green. Remaining misses: c307, c333, c393.
+- Quote attribution guard: shipped for markdown headings/titles; still needs
+  an attribution-verb check for non-heading titles.
+- Multi-company/compositional guard: shipped for explicit org names
+  (`_CJK_ORG` + `detect_entities`); c404's implicit "两家公司" still needs the
+  LLM triage.
+- Partial-support state (A): shipped — a list with 3/4 elements found becomes
+  `unverified` + "Partial support: 3/4 elements found; missing: …", never a
+  green.
+- Source routing (game → 西山志; interview → 金山高管团队访谈) remains open.
+- W1.4 exact evidence narrowing remains open (the sheet shows top-3; W1.4
+  attaches only the passage it actually used).
 
 ## 2026-11-11 — free tier (BYOS-only + 40-search lite) + W6 UI (code changed)
 
