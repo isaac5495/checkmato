@@ -383,6 +383,22 @@ def write_xlsx(meta, findings, path):
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[chr(64 + i)].width = w
     ws.freeze_panes = "A2"
+    # One-screen coverage sheet: what is proven, what needs attention, and what
+    # was never checked. "Not checked" is not a negative finding.
+    cov = coverage_counts(findings)
+    cs = wb.create_sheet("Coverage")
+    cs.append(["State", "Count", "Meaning"])
+    for c in cs[1]:
+        c.fill = PatternFill("solid", fgColor="1F4E78")
+        c.font = Font(bold=True, color="FFFFFF")
+    for key in COVERAGE_ORDER:
+        n = cov.get(key, 0)
+        if key == "other" and not n:
+            continue
+        cs.append([key.replace("_", " ").title(), n, _COVERAGE_EN[key]])
+    for i, w in enumerate([26, 10, 70], 1):
+        cs.column_dimensions[chr(64 + i)].width = w
+    cs.freeze_panes = "A2"
     wb.save(path)
 
 

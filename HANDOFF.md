@@ -1,7 +1,7 @@
 # CheckMato — Handoff
 
 Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
-precision/determinism + W6 coverage (local, not pushed) · all gates green.
+precision/determinism + W6 coverage (pushed) · all gates green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -13,9 +13,8 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
 ## Repo state (2026-11-09)
 
-- `main` is three local commits ahead of `origin/main`; the W1.1/W1.2/W1.3
-  checkpoints are not pushed. The 2026-11-09 search-cache change is uncommitted
-  in the working tree. The only untracked file is
+- `main` is up to date with `origin/main`; the W1.3, search-cache, W1.4, W5
+  and W6 changes are pushed. The only untracked file is
   `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
   document — do not add it). `.opencode` is ignored by the tooling.
 - Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
@@ -23,10 +22,10 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
   0 contradicted, ≤ **$0.0405**. DeepSeek bills successful requests only
   ($0.00075 each); page deep-reads are direct HTTP and free.
-- Next session starts with **W1.4** (`app/nli.py` behind `--semantic`), now
-  that W1.1 retrieval, W1.2 commentary and W1.3 claim units landed 2026-11-05.
-  Prose still stays honestly `unverified` until W1.4, so the 90% target is
-  still unreachable. Deterministic leftovers and the parked ideas are in
+- Next session: W1.4's real true-prose exit-gate eval (the synthetic 50-case
+  proxy is green, but the real 20 labels are diagnostic); W3 citation lane;
+  W4 scanned PDFs; W6 UI labels. W1.4 stays opt-in and default off until the
+  real gate passes. Deterministic leftovers and the parked ideas are in
   `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
 - Verification set: `tests\run_all.py` (18 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
