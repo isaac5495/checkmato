@@ -170,6 +170,23 @@ def _multi_entity_note(claim, evidence_text):
     return None
 
 
+def _heading_quote(claim, evidence_text, quote):
+    """The matched wording sits on a heading/title line, not attributed
+    speech. A section title is not a quote even when it is verbatim."""
+    text = str(evidence_text or "")
+    nq = tp.normalize(quote or "")[:80]
+    for line in text.splitlines():
+        if nq and nq in tp.normalize(line):
+            return line.lstrip().startswith("#")
+    return text.lstrip().startswith("#") and bool(
+        _ATTRIB.search(str(claim.get("sentence") or "")))
+
+
+_ATTRIB = re.compile(
+    r"(?i)\b(?:said|says|stated|wrote|recalled|noted|declared)\b|"
+    r"强调|表示|写道|指出|说：")
+
+
 def _mark_partial(claim, note):
     claim["verdict"] = "unverified"
     claim["confidence"] = "low"
@@ -310,6 +327,27 @@ def judge(llm, claims, corpus=None, web=None, progress=None,
                 continue  # invented/paraphrased proof -> no verdict
             c = by_id[cid]
             if c["verdict"] != "unverified":
+                continue
+            # The reader sees the model's QUOTE, not the whole candidate
+            # passage. A support is only complete if the quote itself carries
+            # every listed element; otherwise it is a partial, never a green.
+            quote_partial = _partial_note(c, quote)
+            if quote_partial:
+                _mark_partial(c, quote_partial)
+                continue
+            if _heading_quote(c, evs[i - 1]["text"], quote):
+                c["suggestion"] = (
+                    "The matched wording is a heading/title, not attributed "
+                    "speech; not counted as a quote.")
+                continue
+            quote_multi = _multi_entity_note(c, quote)
+            if quote_multi:
+                c["_multi_entity"] = quote_multi
+                c["suggestion"] = (
+                    f"Evidence covers only {', '.join(quote_multi['present'])}; "
+                    f"the sentence also names {', '.join(quote_multi['missing'])}. "
+                    "Not counted as supported — split the sentence or find a "
+                    "source covering both.")
                 continue
             if multi_by_id.get(cid):
                 note = multi_by_id[cid]

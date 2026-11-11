@@ -79,6 +79,13 @@ Clue-first retrieval (shipped):
   retrieval misses may be a **library gap**, not a code failure. Rebuild the
   eval library with the full interview source before judging those two.
 - `run_all.py` 20 suites.
+- **Pipeline baseline** (`tests/run_nli_gold.py`, Agnes, 5-source library):
+  supported **7/22**, not_supported **0/6**, partial **0/1** (correctly
+  unverified), narrative **skipped 18/18**, unclear 0/3. The new heading and
+  short-quote guards fixed c381 (title) and c326 (partial). DeepSeek still
+  returns 0 output (3 calls, 0 tokens), so this is not the production judge
+  baseline. `tests/run_nli_gold.py` is the reusable manual evaluator (labels +
+  library args; no private literals).
 
 Still open from the review:
 - W1.2 narrative eligibility: the combined deterministic floor +
@@ -86,14 +93,15 @@ Still open from the review:
   DeepSeek was unavailable). The 4 false narratives (c364, c370, c372, c428)
   are a known trade-off: dropping a true claim is a coverage loss, not a false
   green. Remaining misses: c307, c333, c393.
-- Quote attribution guard: shipped for markdown headings/titles; still needs
-  an attribution-verb check for non-heading titles.
+- Quote attribution guard: shipped for markdown headings/titles **and** in
+  W1.4 (a heading line is not attributed speech); c381 now unverified.
 - Multi-company/compositional guard: shipped for explicit org names
   (`_CJK_ORG` + `detect_entities`); c404's implicit "两家公司" still needs the
   LLM triage.
 - Partial-support state (A): shipped — a list with 3/4 elements found becomes
   `unverified` + "Partial support: 3/4 elements found; missing: …", never a
-  green.
+  green. The check runs on the MODEL'S QUOTE, not the unquoted candidate
+  passage (c326).
 - Interview-source gap: add `金山高管团队访谈` to the eval library before
   judging c364/c365; source routing itself is shipped.
 - W1.4 exact evidence narrowing: the prompt now ranks evidence and prefers

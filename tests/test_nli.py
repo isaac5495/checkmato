@@ -147,6 +147,24 @@ def main():
        f"partial names the missing element ({c.get('_partial')})")
     ok("3/4" in c.get("suggestion", ""), "partial note states the count")
 
+    # 8b. The full candidate passage may contain the 4th element, but the
+    # MODEL'S QUOTE does not; the reader only sees the quote, so it is partial.
+    c = claim(raw="产品包括华光一、华光二、华光三、华光四。",
+              sentence="产品包括华光一、华光二、华光三、华光四。",
+              sentence_context="产品包括华光一、华光二、华光三、华光四。",
+              context_sentence="产品包括华光一、华光二、华光三、华光四。")
+    full = "产品包括华光一、华光二、华光三、华光四。"
+    short = "产品包括华光一、华光二、华光三。"
+    llm = FakeLLM([json.dumps([{
+        "id": "c1", "ev": 1, "verdict": "supported",
+        "quote": short, "note": "three products" }])])
+    got = nli.judge(llm, [c], corpus=FakeCorpus([
+        {"fname": "products.md", "start": 1, "end": 1, "text": full}]))
+    ok(got == 0 and c["verdict"] == "unverified",
+       "a short quote cannot prove a longer list")
+    ok(c.get("_partial") and c["_partial"]["missing"] == ["华光四"],
+       "partial checks the quote, not the unquoted passage")
+
     # 9. Multi-subject: evidence covers Acme, sentence also names Orion ->
     # not one checkable subject.
     c = claim(raw="华光科技与恒宇科技签署了合作协议。",
@@ -161,6 +179,20 @@ def main():
         {"fname": "deal.md", "start": 1, "end": 1, "text": evidence}]))
     ok(got == 0 and c["verdict"] == "unverified", "one-subject evidence is not a green")
     ok(c.get("_multi_entity"), "multi-subject diagnosis is kept")
+
+    # 10. A heading/title match is not attributed speech.
+    c = claim(raw="他强调：Acme motto",
+              sentence="他强调：Acme motto",
+              sentence_context="他强调：Acme motto",
+              context_sentence="他强调：Acme motto")
+    heading = "##### “Acme motto”\nA factual line follows."
+    llm = FakeLLM([json.dumps([{
+        "id": "c1", "ev": 1, "verdict": "supported",
+        "quote": "Acme motto", "note": "heading" }])])
+    got = nli.judge(llm, [c], corpus=FakeCorpus([
+        {"fname": "source.md", "start": 1, "end": 1, "text": heading}]))
+    ok(got == 0 and c["verdict"] == "unverified",
+       "a heading is not a quote")
 
     print(f"NLI TESTS: PASS ({n} assertions)")
 
