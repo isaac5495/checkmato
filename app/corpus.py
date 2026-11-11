@@ -451,7 +451,8 @@ class Corpus:
         if not text:
             return []
         rare = self.rare_tokens(text, k=12)
-        if not rare:
+        clues = tp.clue_terms(text)
+        if not rare and not clues:
             return []
 
         pool, seen = [], set()
@@ -482,6 +483,20 @@ class Corpus:
                 add(0.0, {"fname": fname, "start": lineno, "end": lineno,
                           "text": raw, "tokens": tp.tokens(raw),
                           "precision": precision}, "literal")
+        # Clue lane: figures with units ('28元', '3.2英寸'), quoted phrases,
+        # all-caps names/codes and CJK runs. This is the Ctrl+F a reader would
+        # run; it must survive even when the generic rare-token ranking loses
+        # the exact line.
+        for clue in clues:
+            for _s, fname, lineno, raw, _hits, precision in self.find_literal_lines(
+                    [clue], top=8):
+                p = self._passage_for_line(fname, lineno)
+                if p is not None:
+                    add(0.0, p, "clue")
+                else:
+                    add(0.0, {"fname": fname, "start": lineno, "end": lineno,
+                              "text": raw, "tokens": tp.tokens(raw),
+                              "precision": precision}, "clue")
 
         claim_norm = tp.normalize(text)
         scored = []
@@ -503,6 +518,9 @@ class Corpus:
             # word should not win.
             coverage = len(set(rare_hits))
             phrase_len = _longest_common_phrase(claim_norm, ptext)
+            clue_hits = [c for c in clues if tp.normalize(c) in ptext]
+            clue_score = sum(1.0 / max(1, self.df.get(t, 1))
+                             for c in clue_hits for t in tp.tokens(c))
             # A source whose filename names the claim's subject (金山) is a
             # better lead than a same-topic paragraph from another company
             # (西山志). Soft bonus only: it can break a near-tie, not invent
@@ -515,13 +533,14 @@ class Corpus:
             score = (base + 4.0 * rare_score + 8.0 * lit_score
                      + 18.0 * len(unique_hits) + 3.0 * min(coverage, 6)
                      + 6.0 * len(title_hits)
+                     + 40.0 * len(clue_hits) + 10.0 * clue_score
                      + 0.5 * phrase_len * phrase_len)
             item = dict(p)
             item["score"] = round(score, 6)
             item["why"] = {"lane": lane, "rare": rare_hits[:6],
                            "literal": lit_hits[:6], "unique": unique_hits[:4],
                            "coverage": coverage, "title": title_hits[:4],
-                           "phrase": phrase_len}
+                           "clue": clue_hits[:4], "phrase": phrase_len}
             scored.append(item)
         scored.sort(key=lambda p: (-p["score"], p.get("fname") or "",
                                    p.get("start") or 0))
@@ -538,6 +557,11 @@ class Corpus:
         best = (0.0, None, None, None, "line")
         qcore = {t for t in qtoks if len(t) > 2 or not t.isascii()}
         for _, fname, lineno, raw, _shared, precision in cands:
+            # A section heading/title is not a spoken quote. The exact wording
+            # can be a title and still be "verbatim"; supporting it as a quote
+            # is a false green (e.g. '不怕死的决心和向死而生的勇气').
+            if str(raw).lstrip().startswith("#"):
+                continue
             # candidate must share some substance with the quote (avoid junk)
             if qcore and not (set(tp.tokens(raw)) & qcore):
                 continue

@@ -1,7 +1,8 @@
 # CheckMato — Handoff
 
 Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
-precision/determinism + W6 coverage + free tier/UI (pushed) · 19 suites green.
+precision/determinism + W6 coverage + free tier/UI + clue retrieval (pushed) ·
+20 suites green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -27,10 +28,57 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   W4 scanned PDFs; W6 UI labels. W1.4 stays opt-in and default off until the
   real gate passes. Deterministic leftovers and the parked ideas are in
   `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (19 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (20 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-11 — 50-item gold review + clue-first retrieval (code changed)
+
+The user reviewed the 50-item gold sheet (`reports/w1-gold-50.html`) and gave
+the missing narrative/retrieval judgement. Reviewed labels:
+`reports/w1-gold-50-reviewed.json`.
+
+Review breakdown:
+- **18/50 narrative/not checkable** (1,2,3,5,7,16,19,20,24,28,31,35,36,38,
+  42,44,48,50).
+- 21 supported, 7 not supported, 1 **partial** (c326: only 金山快译 missing),
+  3 unclear/online.
+- Retrieval misses despite true claims: 28元定价 (c331), 3.2英寸 /
+  Microsoft-mobile (c370), 剑网3 / 西山志 (c357), 十年为维度 (c380),
+  金山高管团队访谈 (c364/c365), ALL IN AI (c430), 金山快译 (c326).
+- Quote/title: c381 was supported from a section heading
+  (“不怕死的决心和向死而生的勇气”), not attributed speech.
+- Multi-company/compositional: c404 (Xiaomi + Kingsoft) is narrative, not one
+  checkable fact.
+- Exact evidence: c398 has one perfect passage (`生生不息.md:2233`) plus two
+  irrelevant; W1.4 should narrow to the perfect one.
+
+Baseline on the 50 (Agnes relay; DeepSeek was unavailable/rate-limited):
+- supported **2/22**, not_supported **0/6**, narrative **3/18 false**,
+  partial 0/1, unclear 1/3.
+- The 3 narrative false supports and the c381 quote-title false support are
+  quality bugs; the 2/22 recall is mostly retrieval + model weakness.
+- DeepSeek-only rerun produced 0 output (3 calls, 0 tokens, net_dead); rerun
+  when the key recovers before treating this as the production baseline.
+
+Clue-first retrieval (shipped):
+- `textproc.clue_terms()` extracts figures+units (`28元`, `3.2英寸`), Chinese
+  numerals (`十年`), quoted phrases (`白菜价`), all-caps/codes (`ALL IN AI`),
+  and CJK names (`华光快译`).
+- `Corpus.find_prose_candidates()` adds a **clue lane** (literal Ctrl+F) and
+  a strong clue score, so the decisive string is not lost by the generic
+  rare-token ranking.
+- `tests/test_clue_retrieval.py` 10 assertions; `run_all.py` 20 suites.
+
+Still open from the review:
+- W1.2 narrative eligibility (18/50 leaked because the sheet was built from a
+  sources-only run; rebuild with LLM triage and add deterministic patterns).
+- Quote attribution guard (a heading/title is not a spoken quote).
+- Multi-company/compositional guard.
+- Partial-support state (verdict or note? — user decision).
+- Source routing (game → 西山志; interview → 金山高管团队访谈).
+- W1.4 exact evidence narrowing.
 
 ## 2026-11-11 — free tier (BYOS-only + 40-search lite) + W6 UI (code changed)
 

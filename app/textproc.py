@@ -207,6 +207,44 @@ def cjk_runs(text, min_len=4):
     return re.findall(r"[\u4e00-\u9fff]{%d,}" % min_len, text or "")
 
 
+_NUM_CLUE = re.compile(
+    r"\d+(?:[.,]\d+)?\s*(?:%|％|元|亿元|万美元|亿美元|万港元|亿港元|港元|"
+    r"美元|年|个月|天|英寸|倍|万|亿|人|名|家|套|行|部|台|个)")
+_CN_NUM_CLUE = re.compile(
+    r"[一二三四五六七八九十百千万亿两]+(?:年|个月|天|倍|万|亿|人|名|家|"
+    r"套|行|部|台|个|次|轮)")
+_QUOTED_CLUE = re.compile(r"[「“\"]([^」”\"]{2,40})[」”\"]")
+_CAPS_CLUE = re.compile(r"\b[A-Z]{2,}(?:\s+[A-Z0-9]{1,}){0,4}\b")
+_LATIN_NUM_CLUE = re.compile(r"\b[A-Za-z]{2,}\s+\d+(?:\.\d+)?\b")
+
+
+def clue_terms(text):
+    """Distinctive strings a reader would Ctrl+F for: figures with units,
+    quoted phrases, all-caps names/codes, and CJK runs.
+
+    The generic rare-token lane deliberately drops pure digits, so a claim
+    whose decisive clue is '28元' or '3.2英寸' could lose the exact source
+    line. This lane keeps those clues and is consumed by the prose retriever.
+    """
+    s = str(text or "")
+    out = []
+    out += [m.group(0).strip() for m in _NUM_CLUE.finditer(s)]
+    out += [m.group(0).strip() for m in _CN_NUM_CLUE.finditer(s)]
+    out += [m.group(1).strip() for m in _QUOTED_CLUE.finditer(s)]
+    out += [m.group(0).strip() for m in _CAPS_CLUE.finditer(s)]
+    out += [m.group(0).strip() for m in _LATIN_NUM_CLUE.finditer(s)]
+    out += [r for r in cjk_runs(s, min_len=4) if len(r) <= 20]
+    for r in cjk_runs(s, min_len=4):
+        if len(r) > 6:
+            # A product/person name is often the head or tail of a longer
+            # unpunctuated run ("产品线包括华光快译" -> "华光快译").
+            out += [r[:4], r[-4:]]
+            if len(r) > 8:
+                out += [r[:6], r[-6:]]
+    return list(dict.fromkeys(
+        x for x in out if len(x) >= 2 and x.lower() not in STOP))
+
+
 def rare_phrase(text, k=5):
     """Distinctive words IN READING ORDER (not sorted): produces human-like
     search queries and hand-search suggestions. 'folk hero name screen' reads
