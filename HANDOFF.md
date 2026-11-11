@@ -56,14 +56,28 @@ User chose W1.4. Shipped the LLM baseline from `IMPROVEMENT_PLAN.md` §W1 behind
   rejected, contradiction ignored, numbers excluded, no-evidence no-call, web
   evidence, unavailable LLM). `tests/run_all.py` is now 16 suites, all PASS.
 - Smoke test (synthetic Nimbus Cloud draft + one BYOS source, `--web --llm
-  --semantic`): prose event `c002` supported, medium, evidence `source.md:1`;
-  3 searches, 7 LLM calls.
-- Exit gate still pending: the official W0 true-prose set (20 + 50 items),
-  recall ≥80% with false-support ≤2%. Until it passes, `--semantic` stays
-  opt-in and default off.
-- Still open: add the 62-case hard suite to `tests/`; cluster-first /
-  first-query benchmarks; free-tier policy; push the three W1 commits plus
-  the cache + W1.4 changes after user confirmation.
+  --semantic`): prose event supported, medium, evidence `source.md:1`; 3
+  searches, 7 LLM calls.
+- **Synthetic exit-gate proxy** (`tests/bench_nli_prose.py`, network benchmark,
+  not in `run_all`): 50 cases (25 true paraphrases + 25 near-misses, English
+  and Chinese). Result: **recall 25/25 (100%), false support 0/25 (0%)**,
+  6 LLM calls, ~30 s, DeepSeek. The benchmark's per-claim evidence blocks are
+  deliberate: a shared evidence list let the model borrow a true passage for a
+  near-miss twin, which is why the prompt scopes evidence per claim.
+- **Real 20 diagnostic labels** (private KS doc, 5 BYOS sources, no web):
+  `search_wrong` 1/11 rescued (c300 from 金山AI辯論戰.md:1961); `not_checkable`
+  0/5 touched; `model_wrong` 0/1; the one uncertain item rescued (c323 from
+  生生不息.md:289). The two labels recorded as "supported" in the earlier run
+  are `unverified` in this 5-source reconstruction, so they are not clean
+  recall evidence. 2 LLM calls, ~21k tokens.
+- **Honest conclusion:** the semantic judge is safe (zero false greens in both
+  the synthetic suite and the real labels), but real recall on long, multi-fact
+  Chinese sentences is still low. The bottleneck is evidence packing/retrieval
+  (one passage rarely covers a whole W1.3 sentence), not the prompt. So
+  `--semantic` stays opt-in and default off; the next lever is W2-style
+  multi-passage retrieval, not a looser judge.
+- Still open: W2 retrieval/evidence packing; add the 62-case hard suite to
+  `tests/`; cluster-first / first-query benchmarks; free-tier policy.
 
 ## 2026-11-09 — persistent search cache + quote pool-first (code changed)
 

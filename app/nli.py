@@ -102,20 +102,29 @@ def _evidence_for(claim, corpus, web):
 
 
 def _prompt(items):
+    blocks = []
+    for it in items:
+        lines = "\n".join(f"- {e['text']}" for e in it["evidence"])
+        blocks.append(
+            f"CLAIM {it['id']}: {it['claim']}\n"
+            f"EVIDENCE for claim {it['id']} (use ONLY this block):\n"
+            f"{lines}\n")
     return (
-        "You are a conservative fact-checker. For each CLAIM, decide whether "
-        "its own EVIDENCE contains a passage that entails the claim. SUPPORT "
-        "ONLY: return a claim only when the evidence directly establishes it. "
-        "If the evidence is merely topically related, omit the claim. Never "
-        "use outside knowledge. Never report a contradiction; omit instead.\n"
-        "Rules: (1) evidence about a DIFFERENT organisation that merely shares "
-        "part of the name (subsidiary, spin-off, lookalike) settles nothing; "
-        "(2) a later outcome does not contradict an earlier intention, refusal "
-        "or state; (3) the quote MUST be a verbatim substring of that claim's "
-        "evidence text, in its own language. Return ONLY a JSON array of "
-        '{"id":"<claim id>","ev":<evidence number>,"verdict":"supported",'
-        '"quote":"<verbatim proof>","note":"<one short sentence>"}.\n\n'
-        "CLAIMS:\n" + json.dumps(items, ensure_ascii=False) + "\n\nJSON:")
+        "You are a conservative fact-checker. For each numbered CLAIM below, "
+        "decide whether its OWN evidence block supports it. Use ONLY the "
+        "evidence in that claim's block; never borrow another claim's "
+        "evidence. The wording may differ: accept synonyms, paraphrase and "
+        "pronouns that refer to the claim's subject. Support means the evidence "
+        "states the SAME event or relationship with the same entities and "
+        "values. If the evidence is only topically related, or states a "
+        "different event, value, place, role, time or organisation, omit the "
+        "claim. Never use outside knowledge. Never report a contradiction; "
+        "omit instead. The quote MUST be a verbatim substring of that claim's "
+        "own evidence. Return ONLY a JSON array of "
+        '{"id":"<claim id>","ev":<evidence number in that claim\'s block>,'
+        '"verdict":"supported","quote":"<verbatim proof>",'
+        '"note":"<one short sentence>"}.\n\n'
+        + "\n".join(blocks) + "JSON:")
 
 
 def _parse(raw):
