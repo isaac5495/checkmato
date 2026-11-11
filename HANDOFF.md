@@ -1,7 +1,7 @@
 # CheckMato — Handoff
 
 Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
-precision/determinism + W6 coverage (pushed) · all gates green.
+precision/determinism + W6 coverage + free tier/UI (pushed) · 19 suites green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -27,10 +27,36 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   W4 scanned PDFs; W6 UI labels. W1.4 stays opt-in and default off until the
   real gate passes. Deterministic leftovers and the parked ideas are in
   `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (18 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (19 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-11 — free tier (BYOS-only + 40-search lite) + W6 UI (code changed)
+
+User decisions: 2A+2B (BYOS-only plus a 40-search lite mode), 5A (coverage in
+the web UI), 3C (defer W3), 4B (keep external conversion for W4).
+
+- `--free-tier`: `search_cap` is applied AFTER the planner/config floors, so
+  `max_search` becomes a hard cap (40, `free_tier_search_cap`) instead of the
+  old "floor". BYOS-only stays the zero-network option. Hosted guest runs
+  (`enforce_ip_quota=true`) use the cap by default; local/desktop runs do not.
+- Claims reached after the cap get `_skip_reason` "web budget reached";
+  `coverage_counts()` marks them `not checked`, never `checked, not found`.
+  The report/UI say so explicitly.
+- Web UI (`web/app/page.js` + `globals.css`): coverage strip (supported /
+  checked-not-found / not-checked / no-source / not-checkable / needs-attention
+  / conflicting) and a free-tier banner. Static export rebuilt in `web/out`.
+- 40-search sizing: measured 3.0 searches/claim → ~7–13 claims (planner
+  5.6/claim → ~7). By claim density: 246-word/34-claim draft ~50–95 words
+  (20–38%); 500-word/50-claim ~70–130 (14–26%); 14.5k-word/347-claim case
+  study ~290–550 (2–4%); 628-word narrative ~250–330 (40–53%). Cache hits do
+  not consume the cap; the rest is `not checked`.
+- W1.4 gold set: `reports/w1-gold-50.html` is ready (50 sampled real prose
+  claims + top-3 passages, localStorage progress, JSON export). Waiting for
+  the user's labels before running the real recall/false-support gate.
+- Tests: `test_free_tier.py` 11 assertions; `tests/run_all.py` 19 suites all
+  PASS.
 
 ## 2026-11-11 — W6 coverage split: not-checked is first class (code changed)
 
@@ -140,7 +166,8 @@ User chose W1.4. Shipped the LLM baseline from `IMPROVEMENT_PLAN.md` §W1 behind
   `--semantic` stays opt-in and default off; the next lever is W2-style
   multi-passage retrieval, not a looser judge.
 - Still open: W2 retrieval/evidence packing; add the 62-case hard suite to
-  `tests/`; cluster-first / first-query benchmarks; free-tier policy.
+  `tests/`; cluster-first / first-query benchmarks. Free-tier policy is settled
+  (BYOS-only + 40-search lite; see the 2026-11-11 free-tier section).
 
 ## 2026-11-09 — persistent search cache + quote pool-first (code changed)
 

@@ -35,7 +35,7 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         max_search=60, whitelist=None, fx_rates=None, names=None, cfg=None,
         progress=None, cancel=None, backend="deepseek", library=None,
         sources_only=False, footnotes=False, refresh_search=False,
-        no_search_cache=False, semantic=False):
+        no_search_cache=False, semantic=False, free_tier=False):
     _p = progress or (lambda e: None)
     cancelled_midrun = False
     from . import config as _cfg
@@ -144,9 +144,12 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     mark_commentary(claims)
     # budgets SCALE with the document's actual needs — a 6800-word case study
     # gets the same rigor per paragraph as a 200-word blurb, just more time
-    budgets = est.scaled_budgets(_run_stats(doc, corpus, claims),
-                                 {**cfg, "max_search": max_search},
-                                 web=True, llm=bool(llm and llm.available))
+    budgets = est.scaled_budgets(
+        _run_stats(doc, corpus, claims),
+        {**cfg, "max_search": max_search},
+        web=True, llm=bool(llm and llm.available),
+        search_cap=(int(cfg.get("free_tier_search_cap", 40))
+                    if free_tier else None))
     if llm:
         llm.max_calls = budgets["llm_max_calls"]
         llm.max_tokens = budgets["llm_max_tokens"]
@@ -252,6 +255,9 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
                               and not x.get("_searched")),
         "coverage": coverage_counts(findings),
         "web_exhausted": bool(web and web.budget.exhausted),
+        "free_tier": bool(free_tier),
+        "free_tier_search_cap": (int(cfg.get("free_tier_search_cap", 40))
+                                 if free_tier else 0),
         "semantic": bool(semantic),
         "semantic_rescued": sum(1 for c in claims if c.get("_semantic")),
         "web_entities": entities,
@@ -433,6 +439,10 @@ def main(argv=None):
     ap.add_argument("--llm", action="store_true",
                     help="enable LLM assistance (needs GEMINI_/GROQ_/OPENAI_ API key)")
     ap.add_argument("--max-search", type=int, default=None, help="search budget per run")
+    ap.add_argument("--free-tier", action="store_true",
+                    help="hosted free-tier mode: hard-cap web search at "
+                         "free_tier_search_cap (40) per document; unchecked "
+                         "claims are labelled not checked")
     ap.add_argument("--refresh-search", action="store_true",
                     help="ignore the persistent search cache (still refreshes it)")
     ap.add_argument("--no-search-cache", action="store_true",
@@ -459,7 +469,9 @@ def main(argv=None):
     if a.estimate:
         stats = est.analyze(a.doc, a.corpus, a.names)
         e = est.estimate(stats, {**cfg, "max_search": a.max_search or cfg["max_search"]},
-                         web=a.web or a.llm, llm=a.llm)
+                         web=a.web or a.llm, llm=a.llm,
+                         search_cap=(int(cfg.get("free_tier_search_cap", 40))
+                                     if a.free_tier else None))
         lo, hi, typ = e["seconds_lo"], e["seconds_hi"], e["seconds_typ"]
 
         def fmt(s):
@@ -470,7 +482,8 @@ def main(argv=None):
               f"{stats['claims']} claims ({stats['need_web']} need live web checks)")
         print("  plan (sized to THIS document; budget up to 5-6 searches per "
               "claim, spent only while unsettled — early-stop keeps it honest):")
-        print(f"    - {pl['searches']} web searches")
+        print(f"    - {e['budgets']['max_search']} web searches"
+              + ("  (free-tier cap)" if a.free_tier else ""))
         print(f"    - {pl['deep_checks']} sentence-level deep checks (every claim)")
         print(f"    - {pl['pages']} full-page deep-reads")
         print(f"    - {pl['llm_calls']} LLM judgment calls")
@@ -490,7 +503,8 @@ def main(argv=None):
                           footnotes=a.footnotes,
                           refresh_search=a.refresh_search,
                           no_search_cache=a.no_search_cache,
-                          semantic=a.semantic)
+                          semantic=a.semantic,
+                          free_tier=a.free_tier)
     counts = {}
     for x in findings:
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
@@ -519,6 +533,9 @@ def main(argv=None):
               + (f"  ({hits} cache hits, free)" if hits else "")
               + ("  [BUDGET EXHAUSTED — remaining web items not checked]"
                  if meta.get("web_exhausted") else ""))
+    if meta.get("free_tier"):
+        print(f"  free tier: {meta.get('free_tier_search_cap', 40)} web searches "
+              "max; remaining claims are marked not checked")
     if meta.get("llm_calls"):
         print(f"  llm calls: {meta['llm_calls']}")
     if meta.get("semantic_rescued"):

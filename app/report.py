@@ -60,8 +60,12 @@ def _lane_checked(x):
     `_searched` only means the WEB lane ran. In a BYOS run the deterministic
     judge/apply_byos pass has already checked the claim against the supplied
     corpus, so an `unverified` there is "checked, not found", not "never
-    checked". Only a web-only run with no search is genuinely unchecked.
+    checked". A budget/cancel skip is the exception: that claim was not fully
+    evaluated, so it must stay "not checked".
     """
+    reason = str(x.get("_skip_reason") or "").lower()
+    if "budget" in reason or "cancel" in reason:
+        return False
     if x.get("_searched"):
         return True
     return str(x.get("_mode") or "") in ("sources_only", "sources_then_web")
@@ -233,6 +237,13 @@ def write_md(meta, findings, path):
         lines.append(f"- Mode: `{meta['mode']}`"
                      + (" — no network requests were made"
                         if meta["mode"] == "sources_only" else ""))
+    if meta.get("free_tier"):
+        cap = meta.get("free_tier_search_cap", 40)
+        lines.append(f"- **{L('Free tier', '免费层')}**: " + L(
+            f"web search capped at {cap} per document; claims reached after "
+            "the cap are marked not checked, not unverified.",
+            f"联网检索上限 {cap} 次/文档；达到上限后未检查的条目会标为"
+            "“未检查”，不会当作“查过但找不到”。"))
     if meta.get("byos_sources"):
         lines.append(f"- BYOS library: {meta['byos_sources']} sources"
                      + (f"; {meta['byos_no_text_layer']} with no text layer "

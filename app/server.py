@@ -147,7 +147,9 @@ async def check_estimate(request: Request, text: str = Form(""),
         stats = est.analyze(str(doc_path),
                             str(corpus_dir) if corpus_dir else None,
                             str(names_path) if names_path else None)
-        e = est.estimate(stats, CFG, web=web or llm, llm=llm)
+        e = est.estimate(stats, CFG, web=web or llm, llm=llm,
+                         search_cap=(int(CFG.get("free_tier_search_cap", 40))
+                                     if CFG.get("enforce_ip_quota", True) else None))
         e["doc"] = stats["doc"]
         e["paras"] = stats["paras"]
         return JSONResponse(e)
@@ -215,6 +217,7 @@ async def check(request: Request, text: str = Form(""),
                 whitelist=[w.strip() for w in whitelist.split(",") if w.strip()],
                 names=str(names_path) if names_path else None, cfg=CFG,
                 backend=backend,
+                free_tier=bool(CFG.get("enforce_ip_quota", True)),
                 progress=lambda ev: loop.call_soon_threadsafe(q.put_nowait, ev),
                 cancel=lambda: JOBS.get(job_id, {}).get("cancel"))
             from .report import to_record

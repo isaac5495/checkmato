@@ -91,8 +91,12 @@ def plan(stats, web=True, llm=True):
     return p
 
 
-def scaled_budgets(stats, cfg, web=True, llm=False):
+def scaled_budgets(stats, cfg, web=True, llm=False, search_cap=None):
     """Turn the plan into run budgets (cfg values act as floors, never caps).
+
+    `search_cap` is the ONE exception: the free-tier policy deliberately
+    bounds web search (40 requests/doc). It is applied AFTER the floors and
+    only to `max_search`, so the paid/full run is unchanged.
     Time ceilings are DERIVED from the plan at pessimistic rates, so a run is
     never cut short — they only stop truly runaway loops."""
     p = plan(stats, web=web, llm=llm)
@@ -110,6 +114,8 @@ def scaled_budgets(stats, cfg, web=True, llm=False):
     for k in ("max_search", "max_pages", "deep_max_claims", "llm_max_calls",
               "llm_max_tokens"):
         b[k] = max(b[k], int(cfg.get(k, 0)))
+    if web and search_cap is not None:
+        b["max_search"] = min(b["max_search"], max(0, int(search_cap)))
     # worst-case ceilings: 6s per search slot w/ fewer workers, 25s per LLM call
     b["web_max_seconds"] = int(b["max_search"] * 6.0 / 3.0
                                + b["max_pages"] * 10.0 / 3.0) + 300
@@ -119,18 +125,24 @@ def scaled_budgets(stats, cfg, web=True, llm=False):
     return b
 
 
-def estimate(stats, cfg, web=True, llm=False):
+def estimate(stats, cfg, web=True, llm=False, search_cap=None):
     """The preflight quote the user approves before anything starts."""
     p = plan(stats, web=web, llm=llm)
-    b = scaled_budgets(stats, cfg, web=web, llm=llm)
+    b = scaled_budgets(stats, cfg, web=web, llm=llm, search_cap=search_cap)
     need = stats["need_web"]
-    coverage_pct = round(100 * min(1, p["searches"] / max(1, int(need * PER_CLAIM_SEARCHES)))) if web else 100
+    planned = p["searches"]
+    if web and search_cap is not None:
+        planned = min(planned, max(0, int(search_cap)))
+    coverage_pct = round(100 * min(1, planned / max(1, int(need * PER_CLAIM_SEARCHES)))) if web else 100
     rec = None
-    if web and coverage_pct < 100:
+    if web and search_cap is not None and p["searches"] > planned:
+        rec = (f"Free-tier cap: {planned} web searches. Claims reached after "
+               f"the cap are labelled 'not checked', not 'unverified'.")
+    elif web and coverage_pct < 100:
         rec = (f"Sanity caps reached: {coverage_pct}% of claims get the full "
                f"search depth. Split into sections to keep the 5-6 searches/claim contract.")
     return {"seconds_lo": p["seconds_lo"], "seconds_hi": p["seconds_hi"],
             "seconds_typ": p["seconds_typ"], "plan": p,
             "words": stats["words"], "claims": stats["claims"],
             "need_web": need, "coverage_pct": coverage_pct,
-            "recommend": rec, "budgets": b}
+            "search_cap": search_cap, "recommend": rec, "budgets": b}

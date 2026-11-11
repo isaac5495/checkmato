@@ -634,6 +634,31 @@ export default function Home() {
             <div className="banner"><b>Cancelled — partial results.</b> Everything
               already checked is shown; unchecked items say so. You can re-run anytime.</div>
           )}
+          {report.meta?.free_tier && (
+            <div className="banner"><b>Free tier:</b> web search is capped at{" "}
+              {report.meta.free_tier_search_cap || 40} requests per document.
+              Claims reached after the cap are marked <b>Not checked</b>, not
+              &quot;checked, not found&quot;.</div>
+          )}
+          {report.meta?.coverage && (
+            <section className="coverage" aria-label="Run coverage">
+              {[
+                ["supported", "Supported", "ok"],
+                ["checked_not_found", "Checked, not found", "info"],
+                ["not_checked", "Not checked", "warn"],
+                ["no_source", "No source", "warn"],
+                ["not_checkable", "Not checkable", ""],
+                ["needs_attention", "Needs attention", "warn"],
+                ["conflicting", "Conflicting", "warn"],
+                ["structure", "Structure", ""],
+              ].filter(([k]) => report.meta.coverage[k] != null).map(([k, label, tone]) => (
+                <div key={k} className={`cov ${tone}`}>
+                  <b>{report.meta.coverage[k] ?? 0}</b>
+                  <span>{label}</span>
+                </div>
+              ))}
+            </section>
+          )}
           <section className="chips">
             {Object.entries(VERDICTS).filter(([v]) => counts[v]).map(([v, meta]) => (
               <button

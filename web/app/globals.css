@@ -72,8 +72,17 @@ header { padding: 34px 0 18px; }
 .chainlist code { background: #eef3f1; padding: 1px 5px; border-radius: 4px; }
 .chainlist .budget { color: #a08300; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 18px 0 12px; }
-.chip { background: var(--card); border: 1.5px solid; border-radius: 999px; padding: 4px 12px;
+.coverage { display: grid; grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+gap: 8px; margin: 14px 0 0; }
+.cov { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+padding: 9px 11px; }
+.cov b { display: block; font-size: 20px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.cov span { display: block; font-size: 11.5px; color: var(--mut); margin-top: 2px; }
+.cov.ok b { color: #1e7d43; }
+.cov.warn b { color: #a85b06; }
+.cov.info b { color: #2f6cb0; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 18px 0 12px; }.chip { background: var(--card); border: 1.5px solid; border-radius: 999px; padding: 4px 12px;
   font-size: 13px; cursor: pointer; }
 .chip b { margin-left: 4px; }
 .chip.off { opacity: .35; }
