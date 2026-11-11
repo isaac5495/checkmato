@@ -34,13 +34,14 @@ def _run_stats(doc, corpus, claims):
 def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=False,
         max_search=60, whitelist=None, fx_rates=None, names=None, cfg=None,
         progress=None, cancel=None, backend="deepseek", library=None,
-        sources_only=False, footnotes=False):
+        sources_only=False, footnotes=False, refresh_search=False,
+        no_search_cache=False, semantic=False):
     _p = progress or (lambda e: None)
     cancelled_midrun = False
     from . import config as _cfg
     from . import estimate as est
     from . import llm as llm_mod
-    from .textproc import detect_cjk_entities, detect_entities
+    from .textproc import clean_name, detect_cjk_entities, detect_entities
     cfg = cfg or _cfg.load()
     import corpus as _corpus_mod
     _corpus_mod.VERBATIM_CUT = cfg["quote_verbatim_cut"]
@@ -67,6 +68,10 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         "mode": mode})
     llm = LLM(max_calls=cfg["llm_max_calls"], max_tokens=cfg["llm_max_tokens"],
               max_seconds=cfg["llm_max_seconds"]) if use_llm else None
+    if semantic and not (llm and llm.available):
+        semantic = False
+        _p({"stage": "semantic_skip",
+            "item": "--semantic needs --llm with a usable key; prose stays unverified"})
     claims = extract_claims(doc["paragraphs"])
     _p({"stage": "extract", "claims": len(claims)})
     context = None
@@ -152,18 +157,20 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     classify_prose(llm, claims, progress=_p)
     entities = detect_entities(doc["paragraphs"])
     if context and context.get("subject"):
-        nat = str(context.get("subject_native") or "").strip()
-        heads = [context["subject"]]
-        if nat and nat.lower() != str(context["subject"]).lower():
+        subj = clean_name(context["subject"])
+        nat = clean_name(context.get("subject_native"))
+        heads = [subj] if subj else []
+        if nat and nat.casefold() != subj.casefold():
             # native-script alias (Kingsoft ↔ 金山软件): without it a Chinese
             # snippet stating the exact fact fails the entity anchor and the
             # whole evidence pool is thrown away as 'not mentioning the subject'
             heads.append(nat)
         for pn in (context.get("people_native") or []):
-            sp = str(pn).strip()
-            if sp and sp.lower() != "null":
+            sp = clean_name(pn)
+            if sp:
                 heads.append(sp)  # 雷军/求伯君 anchor Chinese snippets too
-        entities = heads + [e for e in entities if e not in heads]
+        if heads:
+            entities = heads + [e for e in entities if e not in heads]
     if alias.groups:
         entities = entities + [grp[0] for grp, _ts in alias.groups
                                if grp[0] not in entities]
@@ -172,24 +179,29 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     if not sources_only and (use_web or (llm and llm.available)):
         pairs = []
         if context:
-            s = str(context.get("subject") or "").strip()
-            sn = str(context.get("subject_native") or "").strip()
-            if s and sn and sn.lower() != "null" and sn != s:
+            s = clean_name(context.get("subject"))
+            sn = clean_name(context.get("subject_native"))
+            if s and sn and sn.casefold() != s.casefold():
                 pairs.append((s, sn))
             for a, b in zip(context.get("people") or [],
                             context.get("people_native") or []):
-                a, b = str(a).strip(), str(b).strip()
-                if a and b and b.lower() != "null" and a.isascii() and not b.isascii():
+                a, b = clean_name(a), clean_name(b)
+                if a and b and a.isascii() and not b.isascii():
                     pairs.append((a, b))
         web = WebEvidence(
             WebBudget(budgets["max_search"], budgets["web_max_seconds"],
                       budgets["max_pages"]),
             site_whitelist=whitelist or [], entities=entities,
             entity_pairs=pairs, doc_paras=doc["paragraphs"],
-            backends=backend)
+            backends=backend,
+            cache_path=cfg.get("search_cache_path") or None,
+            cache_days=cfg.get("search_cache_days", 14),
+            cache_enabled=bool(cfg.get("search_cache", True)
+                               and not no_search_cache),
+            refresh_cache=refresh_search)
     if web:
         enrich(claims, web, llm, progress=_p, context=context, cancel=cancel,
-               corpus=corpus)
+               corpus=corpus, semantic=semantic)
     if cancel and cancel():
         cancelled_midrun = True
         for c in claims:
@@ -231,12 +243,16 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         "web_searches_used": web.budget.used if web else 0,
         "web_search_budget": web.budget.max if web else 0,
         "web_pages_read": web.budget.used_pages if web else 0,
+        "web_cache_hits": web.cache.hits if web else 0,
+        "web_cache_misses": web.cache.misses if web else 0,
         "web_backends": _backends(web),
         "web_checked": sum(1 for x in findings if x.get("_searched")),
         "web_unsearched": sum(1 for x in findings
                               if x["verdict"] in ("unverified", "deferred_web")
                               and not x.get("_searched")),
         "web_exhausted": bool(web and web.budget.exhausted),
+        "semantic": bool(semantic),
+        "semantic_rescued": sum(1 for c in claims if c.get("_semantic")),
         "web_entities": entities,
         "timelines": timelines,
         "context": context,
@@ -416,6 +432,13 @@ def main(argv=None):
     ap.add_argument("--llm", action="store_true",
                     help="enable LLM assistance (needs GEMINI_/GROQ_/OPENAI_ API key)")
     ap.add_argument("--max-search", type=int, default=None, help="search budget per run")
+    ap.add_argument("--refresh-search", action="store_true",
+                    help="ignore the persistent search cache (still refreshes it)")
+    ap.add_argument("--no-search-cache", action="store_true",
+                    help="disable the persistent search cache for this run")
+    ap.add_argument("--semantic", action="store_true",
+                    help="W1.4: support-only LLM judge for prose using BYOS "
+                         "leads + web evidence (requires --llm); default off")
     ap.add_argument("--whitelist", default="",
                     help="comma-separated authoritative sites, e.g. reuters.com,gov.cn")
     ap.add_argument("--backend", default="deepseek",
@@ -455,13 +478,18 @@ def main(argv=None):
         if e.get("recommend"):
             print(f"  RECOMMENDATION: {e['recommend']}")
         return 0
+    if a.semantic and not a.llm:
+        print("note: --semantic requires --llm; prose will stay unverified")
     findings, meta = run(a.doc, a.corpus, a.out, use_web=a.web, use_llm=a.llm,
                          max_search=a.max_search or cfg["max_search"],
                          whitelist=([w.strip() for w in a.whitelist.split(",") if w.strip()]
                                     or cfg["whitelist"]),
                           names=a.names, cfg=cfg, backend=a.backend,
                           library=a.library, sources_only=a.sources_only,
-                          footnotes=a.footnotes)
+                          footnotes=a.footnotes,
+                          refresh_search=a.refresh_search,
+                          no_search_cache=a.no_search_cache,
+                          semantic=a.semantic)
     counts = {}
     for x in findings:
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
@@ -484,12 +512,17 @@ def main(argv=None):
         print(f"  footnotes      {meta['footnotes_audited']} audited -> audit.md")
     if meta["mode"] == "sources_only":
         print("  web: off (sources_only)")
-    if meta.get("web_searches_used"):
+    if meta.get("web_search_budget"):
+        hits = meta.get("web_cache_hits", 0)
         print(f"  web searches: {meta['web_searches_used']}/{meta['web_search_budget']}"
+              + (f"  ({hits} cache hits, free)" if hits else "")
               + ("  [BUDGET EXHAUSTED — remaining web items not checked]"
                  if meta.get("web_exhausted") else ""))
     if meta.get("llm_calls"):
         print(f"  llm calls: {meta['llm_calls']}")
+    if meta.get("semantic_rescued"):
+        print(f"  semantic: {meta['semantic_rescued']} prose claims supported "
+              "(support-only, medium confidence)")
     print(f"Reports -> {Path(a.out) / 'report.md'} | report.xlsx | claims.jsonl")
     return 0
 

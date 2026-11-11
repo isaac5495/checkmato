@@ -25,6 +25,7 @@ import urllib.request
 
 from . import corpus as corp
 from . import textproc as tp
+from .searchcache import SearchCache, normalize_query
 
 UA = "Mozilla/5.0 (compatible; CheckMato/0.1; fact-check research)"
 SEARCH_TIMEOUT = 8  # seconds per search request (fail fast; budget degrades)
@@ -216,7 +217,9 @@ class DeepSeekSearch:
 
 class WebEvidence:
     def __init__(self, budget=None, site_whitelist=None, entities=None,
-                 entity_pairs=None, doc_paras=None, backends="deepseek"):
+                 entity_pairs=None, doc_paras=None, backends="deepseek",
+                 cache_path=None, cache_days=14, cache_enabled=True,
+                 refresh_cache=False):
         self.budget = budget or WebBudget()
         self.whitelist = site_whitelist or []
         self.raw_entities = list(entities or [])
@@ -244,6 +247,9 @@ class WebEvidence:
         self._pages = {}
         self._lock = threading.Lock()
         self._pool = []  # every snippet retrieved this run (for cross-claims)
+        self.cache = SearchCache(path=cache_path, days=cache_days,
+                                 enabled=cache_enabled)
+        self.refresh_cache = bool(refresh_cache)
 
 
     def _mentions_entity(self, blob):
@@ -318,11 +324,27 @@ class WebEvidence:
                                    "body": p["text"]})
 
     def search(self, query, max_results=6):
-        if not self.available or self.budget.exhausted:
+        if not self.available:
             return None  # caller must handle degraded mode explicitly
+        qk = (normalize_query(query) or query, int(max_results))
         with self._lock:
-            if query in self._cache:
-                return self._cache[query]
+            if qk in self._cache:
+                return self._cache[qk]
+        # A paid-for SERP is free the second time. Consult the persistent
+        # cache BEFORE the budget check: hits cost nothing, so they can still
+        # settle a claim after the paid budget is spent.
+        if not self.refresh_cache:
+            cached = self.cache.get(self.only, query, max_results)
+            if cached is not None:
+                with self._lock:
+                    # A cached SERP is still evidence: it must join this run's
+                    # pool exactly like a fresh one, or cross-claim reuse and
+                    # pool-judge silently lose pages they had in run 1.
+                    self._pool.extend(cached)
+                    self._cache.setdefault(qk, cached)
+                    return self._cache[qk]
+        if self.budget.exhausted:
+            return None
         if not self.budget.spend():
             return None
         self.budget.wait_turn()  # paced globally: bursts = CAPTCHA storms
@@ -342,8 +364,10 @@ class WebEvidence:
         res = cleaned
         with self._lock:
             self._pool.extend(res)
-            self._cache.setdefault(query, res)
-            return self._cache[query]
+            self._cache.setdefault(qk, res)
+            out = self._cache[qk]
+        self.cache.put(self.only, query, max_results, res)
+        return out
 
     # ---- deep read: snippets hint, pages decide ----
 

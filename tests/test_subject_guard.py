@@ -90,6 +90,14 @@ def main():
     ok("宁宇科技" in ents and "宁宇健康" in ents and "宁宇集团" in ents,
        f"CJK org names are detected separately ({ents})")
 
+    # 6. LLM placeholder strings ("None", "??") are never entity anchors: a
+    #    scraped annual report containing the literal word "None" must not
+    #    "name the subject" and turn an unrelated page into evidence.
+    from app.textproc import clean_name
+    ok(clean_name("None") == "" and clean_name("??") == ""
+       and clean_name("Nimbus Cloud") == "Nimbus Cloud",
+       "placeholder names must not become web anchors")
+
     print(f"SUBJECT GUARD: PASS ({n} assertions)")
     return 0
 

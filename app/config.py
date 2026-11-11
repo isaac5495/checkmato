@@ -37,6 +37,12 @@ DEFAULTS = {
     "max_words_per_day": 60_000,    # per IP/day aggregate
     "deep_max_claims": 16,          # LLM-planned deep web checks per run
     "brave_monthly_cap": 1000,      # Brave free credit; 0 left → skip the key
+    # Persistent SERP cache: the same query is never paid for twice. Stores
+    # search results only, never verdicts. Empty = per-user data dir; hosted
+    # multi-tenant deployments should set a tenant-specific path.
+    "search_cache": True,
+    "search_cache_days": 14,
+    "search_cache_path": "",
 }
 
 

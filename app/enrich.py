@@ -226,6 +226,17 @@ def _apply_web(claim, web, deep=False):
         claim["_skip_reason"] = "reserved for the sentence-level deep check"
         return
     if claim["type"] == "quote":
+        # Zero-risk reuse: a verbatim quote already in this run's pool is the
+        # SAME >=0.9 wording match a direct search would apply, and quotes have
+        # no contradiction path (`_assess_quote` is support/notfound only).
+        # Numbers deliberately do NOT short-circuit here: a skipped direct
+        # search could miss the conflicting-value guard.
+        reused = web.reuse_pool(claim)
+        if reused and reused.get("status") == "supported":
+            if _apply_reuse(claim, reused):
+                claim["_searched"] = True
+                claim["_reuse"] = True
+                return
         r = web.verify_quote(claim)
     elif claim["type"] in ("year", "amount", "pct", "count"):
         r = web.verify_number(claim)
@@ -320,6 +331,39 @@ def _apply_web(claim, web, deep=False):
             claim["suggestion"] = "Web searched, nothing found — leave unverified."
 
 
+def _apply_reuse(claim, r, _p=None, used=0,
+                 note="snippet already retrieved this run (related claim)"):
+    """Apply a pool match: support or both-camps conflict, never `contradicted`.
+
+    reuse_pool refuses contradictions by contract, so this can never invent a
+    red flag from a page that merely lists many years/figures."""
+    st = r.get("status")
+    if st not in ("supported", "conflicting"):
+        return False
+    ev = (r.get("evidence") or [])[:4 if st == "conflicting" else 1]
+    if not ev:
+        return False
+    for e in ev:
+        e["note"] = note
+    claim.pop("_skip_reason", None)
+    if st == "conflicting":
+        claim["verdict"], claim["confidence"] = "conflicting", "medium"
+        claim["evidence"] = (claim.get("evidence") or []) + ev
+        claim["suggestion"] = ("Snippets fetched earlier in this run disagree — "
+                               "some support this, one states "
+                               f"{r.get('conflicting', 'a different value')}. "
+                               "Both camps shown; needs your call.")
+    else:
+        claim["verdict"], claim["confidence"] = "supported", "medium"
+        claim["evidence"] = (claim.get("evidence") or []) + ev
+        claim["suggestion"] = ("Confirmed by an evidence snippet fetched earlier "
+                               "in this run — nothing extra searched.")
+    if _p:
+        _p({"stage": "reuse", "id": claim["id"], "used": used,
+            "item": claim["raw"][:60]})
+    return True
+
+
 def _reuse_pass(claims, web, _p):
     """One good source settles every claim it literally covers: re-match every
     snippet already fetched this run against still-unverified claims. Local
@@ -333,32 +377,12 @@ def _reuse_pass(claims, web, _p):
         if not r:
             continue
         st = r.get("status")
-        ev = (r.get("evidence") or [])[:4 if st == "conflicting" else 1]
-        if not ev:
-            continue
-        for e in ev:
-            e["note"] = "snippet already retrieved this run (related claim)"
-        if st == "conflicting":
-            c["verdict"], c["confidence"] = "conflicting", "medium"
-            c["evidence"] = (c.get("evidence") or []) + ev
-            c["suggestion"] = ("Snippets fetched earlier in this run disagree — "
-                               "some support this, one states "
-                               f"{r.get('conflicting', 'a different value')}. "
-                               "Both camps shown; needs your call.")
-            _p({"stage": "reuse", "id": c["id"], "used": web.budget.used,
-                "item": c["raw"][:60]})
-        elif st == "supported":
-            c["verdict"], c["confidence"] = "supported", "medium"
-            c["evidence"] = (c.get("evidence") or []) + ev
-            c["suggestion"] = ("Confirmed by an evidence snippet fetched earlier "
-                               "in this run — nothing extra searched.")
-            _p({"stage": "reuse", "id": c["id"], "used": web.budget.used,
-                "item": c["raw"][:60]})
-        elif st == "contradicted":
+        if st == "contradicted":
             # reuse_pool is support-only by contract; ignore a contradiction
             # defensively so no future caller can re-introduce the year-list
             # false alarm (2026-11-02).
             continue
+        _apply_reuse(c, r, _p=_p, used=web.budget.used)
 
 
 def _claim_rare(c):
@@ -776,7 +800,7 @@ def _share_result(group):
 
 
 def enrich(claims, web, llm, progress=None, context=None, cancel=None,
-           corpus=None):
+           corpus=None, semantic=False):
     _p = progress or (lambda e: None)
     _cx = cancel or (lambda: False)
     deep = bool(web and llm and llm.available)
@@ -861,6 +885,12 @@ def enrich(claims, web, llm, progress=None, context=None, cancel=None,
     if web:
         _reuse_pass(claims, web, _p)
         _pool_judge(claims, web, llm, _p, cancel=_cx)
+        # W1.4 runs AFTER the pool judge on purpose: the pool judge may surface
+        # a conflicting source, and a support-first pass would hide it. Only
+        # claims still unverified are eligible; the NLI contract is support-only.
+        if semantic and llm and llm.available and not _cx():
+            from . import nli
+            nli.judge(llm, claims, corpus=corpus, web=web, progress=_p)
         for g in groups:
             _share_result(g)
         _explain(claims, web, corpus=corpus)

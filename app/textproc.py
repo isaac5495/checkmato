@@ -3,6 +3,18 @@ import unicodedata
 
 CJK = re.compile(r"[\u4e00-\u9fff]")
 
+# LLM context extraction sometimes returns the STRING "None"/"null"/"??" as a
+# person or native name. Those placeholders must never become web anchors: a
+# scraped annual report containing the literal word "None" would otherwise
+# "name the subject" and turn an unrelated page into evidence.
+_PLACEHOLDER_NAMES = {"", "none", "null", "n/a", "na", "unknown", "?",
+                      "??", "-", "—"}
+
+
+def clean_name(value):
+    s = str(value or "").strip()
+    return "" if s.casefold() in _PLACEHOLDER_NAMES else s
+
 STOP = {
     "a", "an", "the", "is", "was", "were", "are", "been", "being", "be", "in", "on",
     "at", "by", "for", "to", "of", "and", "or", "said", "says", "that", "this", "it",

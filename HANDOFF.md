@@ -1,17 +1,21 @@
 # CheckMato — Handoff
 
-Status: 2026-11-05 · W1.3 checkpoint (local, not pushed) · all gates green.
+Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` (local,
+not pushed) · all gates green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
-are done; W1.4 (semantic prose), W3 (citation lane), W4 (scanned PDFs) and
-W6 (product surface) remain open. Written for whoever picks this up next (AI session or human) so today's
+are done; W1.4 now has an opt-in support-only semantic judge behind
+`--semantic` (its W0 exit-gate eval is still open). W3 (citation lane), W4
+(scanned PDFs) and W6 (product surface) remain open. Written for whoever picks
+this up next (AI session or human) so today's
 decisions don't get re-litigated.
 Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
-## Repo state (2026-11-05)
+## Repo state (2026-11-09)
 
 - `main` is three local commits ahead of `origin/main`; the W1.1/W1.2/W1.3
-  checkpoints are not pushed. The only untracked file is
+  checkpoints are not pushed. The 2026-11-09 search-cache change is uncommitted
+  in the working tree. The only untracked file is
   `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
   document — do not add it). `.opencode` is ignored by the tooling.
 - Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
@@ -24,10 +28,122 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   Prose still stays honestly `unverified` until W1.4, so the 90% target is
   still unreachable. Deterministic leftovers and the parked ideas are in
   `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (14 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (16 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-11 — W1.4 semantic prose judge, support-only (code changed)
+
+User chose W1.4. Shipped the LLM baseline from `IMPROVEMENT_PLAN.md` §W1 behind
+`--semantic` (default off); the base install and all gates are unchanged.
+
+- `app/nli.py` (new): optional semantic judge. Reads the FULL sentence
+  (`sentence_context` > `context_sentence` > `sentence`), W1.1 BYOS
+  `find_prose_candidates` and this run's web pool. Batches 8 claims per call;
+  max 24 claims/run. A support must quote a **verbatim** span of the evidence,
+  checked before any verdict is set. Only `supported` is accepted, confidence
+  capped at `medium`. Model `contradicted`/`conflicting` are ignored — only
+  deterministic guards may flag those. No new dependency: it uses the existing
+  LLM chain; the MiniCheck/Erlangshen backend can replace `judge()` later
+  without changing the contract.
+- `enrich(..., semantic=False)`: runs AFTER `_pool_judge`, so a conflicting
+  source is surfaced before a support can hide it; before `_share_result` and
+  `_explain`.
+- CLI `--semantic` (requires `--llm`; without it the run warns and prose stays
+  unverified). Meta `semantic` / `semantic_rescued`; report line.
+- Tests: `tests/test_nli.py` (11 assertions: verbatim support, invented quote
+  rejected, contradiction ignored, numbers excluded, no-evidence no-call, web
+  evidence, unavailable LLM). `tests/run_all.py` is now 16 suites, all PASS.
+- Smoke test (synthetic Nimbus Cloud draft + one BYOS source, `--web --llm
+  --semantic`): prose event `c002` supported, medium, evidence `source.md:1`;
+  3 searches, 7 LLM calls.
+- Exit gate still pending: the official W0 true-prose set (20 + 50 items),
+  recall ≥80% with false-support ≤2%. Until it passes, `--semantic` stays
+  opt-in and default off.
+- Still open: add the 62-case hard suite to `tests/`; cluster-first /
+  first-query benchmarks; free-tier policy; push the three W1 commits plus
+  the cache + W1.4 changes after user confirmation.
+
+## 2026-11-09 — persistent search cache + quote pool-first (code changed)
+
+User constraint: no quality trade. Only levers that cannot remove an evidence
+chance were shipped; the hard cap / ladder cut / claim skipping stay rejected.
+
+- `app/searchcache.py` (new): SQLite SERP cache. Key = SHA-256(backend +
+  NFKC/casefold/whitespace-normalized query + max_results). TTL 14 d
+  (`search_cache_days`). Stores **results only, never verdicts**; empty SERPs
+  are NOT cached (a transient miss must not freeze a claim for 14 d). Default
+  path `%LOCALAPPDATA%\CheckMato\search_cache.sqlite` (or
+  `$XDG_CACHE_HOME/checkmato`); `CHECKMATO_CACHE_DIR` overrides. Config
+  `search_cache` (bool) and `search_cache_path` (tenant-specific file for
+  hosted deployments). CLI `--refresh-search` (bypass read, still write) and
+  `--no-search-cache`.
+- `WebEvidence.search`: persistent lookup BEFORE the budget check; a hit costs
+  no budget and is still added to `_pool` (cross-claim reuse and pool-judge
+  must see the same pages as run 1). In-run `_cache` now keys on normalized
+  query + max_results, so case/whitespace variants dedupe within a run.
+- `app/enrich.py`: `_apply_reuse()` helper; **quote-only** pool-first. A
+  verbatim quote already in the pool is the same >=0.9 `_assess_quote` match a
+  direct search would apply, and quotes have no contradiction path. Numbers
+  still search: only the direct search can surface a conflicting value.
+- Report/CLI: `web_cache_hits` / `web_cache_misses`; summary and `report.md`
+  show hits separately (a hit is free, not counted as a search).
+- Quality bug found by the verification: LLM context extraction returned the
+  STRING `"None"`/`"??"` as native names, which became entity anchors; a
+  tianyancha annual report containing the literal word "None" then
+  "supported" an unrelated 2019 claim (c014 in run 1). `textproc.clean_name()`
+  now drops placeholders before they reach `entities`/`entity_pairs`.
+
+Measured on `tests/case_ai_draft.md` with one shared cache dir:
+- run 1 (cold): 91/215 searches, 0 hits, ~$0.068 search.
+- run 2 (warm): 4/232 searches, 90 hits, ~$0.003 search.
+- run 3 (warm): 1/209 searches, 70 hits, ~$0.00075 search.
+- Claim count varies 35–39 across runs because the LLM triage/semantic stage
+  is nondeterministic — pre-existing, not caused by the cache. The
+  deterministic cache gate is `tests/test_search_cache.py` (same query, TTL,
+  empty-SERP, refresh, quote-reuse, number-still-searches).
+- The only same-claim verdict change (c014 supported → unverified) was the
+  `"None"` false green above; after `clean_name()` the anchor is gone.
+
+Tests: `tests/run_all.py` — 15 suites, all PASS (ruff + 188 unit assertions +
+7 subject-guard assertions + the new cache suite).
+
+Still open: the 62-case hard suite is not in `tests/`; cluster-first and
+better-first-query remain measure-then-adopt; free-tier policy (BYOS-only vs
+quota) is a user decision; W1.4; push the three W1 commits plus this change
+after user confirmation.
+
+## 2026-11-07 — search cost: quality-first constraint (research, no code changed)
+
+- User constraint: never trade quality for cost. No hard caps, no skipped
+  claims, no ladder reduction, no cheaper backend unless a benchmark proves
+  no loss. This supersedes the earlier free-tier hard-cap idea.
+- Measured on `tests/case_ai_draft.md` (246 words, 34 claims, 31 searched):
+  **93/204 searches**, 52 pages, 7 LLM calls, **$0.06975**; search is ~91% of
+  variable cost. 93 = 31 × 3: the ladder exhausted its 3-query cap because
+  the test company is fictional. Real docs should early-stop more; the
+  planner's 5.6/claim is a ceiling (actual here 3.0).
+- No persistent cache exists (`WebEvidence._cache` is per-run, exact-string
+  only). `max_search` is a floor, not a cap (`scaled_budgets()` takes max).
+- Rejected as quality-reducing: free-tier hard cap, ladder 3→2 without proof,
+  skipping claims, unbenchmarked backend swap.
+- Quality-preserving levers (pending implementation): (1) persistent SERP
+  cache — SQLite, TTL 14 d, normalized key, results only, per-install;
+  (2) pool-first — run `reuse_pool` before `_apply_web` spends a search;
+  `_reuse_pass()`/`_pool_judge()` currently run only at the END;
+  (3) canonicalize the cache key only; (4) optional 3-day negative cache.
+- Measure-then-adopt: better first query (instrument which rung supports);
+  cluster-first ordering; whitelist ordering. Gate on the 62-case hard suite:
+  supported recall and false support must be unchanged.
+- Free tier: a quota is a coverage cut; the only quality-preserving free tier
+  is BYOS-only. Pending user decision.
+- Next: user asked for handoff first. Then implement cache + pool-first,
+  re-run the same doc twice, confirm identical verdict distribution and
+  materially fewer searches on run 2.
+- Full cost/revenue detail and the provider comparison:
+  `C:\Users\user\AppData\Local\Temp\opencode\checkmato-cost-revenue-handoff-2026-11-06.md`
+  (§13 provider comparison, §14 this analysis).
 
 ## 2026-11-05 — W1.3 claim units, fragments, multi-leads (code changed)
 

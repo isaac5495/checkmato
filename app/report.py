@@ -171,6 +171,8 @@ def write_md(meta, findings, path):
                      f"{L('searches used (free keyless tier)', '次检索（免费无需密钥）')}"
                      + (f"; {meta.get('web_pages_read', 0)} {L('pages deep-read', '次全文深读')}"
                         if meta.get("web_pages_read") else "")
+                     + (f"; {meta.get('web_cache_hits', 0)} {L('cache hits (free)', '次缓存命中（免费）')}"
+                        if meta.get("web_cache_hits") else "")
                      + (f"; {L('backends', '检索后端')}: {meta['web_backends']}"
                         if meta.get("web_backends") else "")
                      + f"; {L('entity anchor: a snippet must name one of', '联网证据须命中以下实体之一')}: {ents}")
@@ -182,6 +184,9 @@ def write_md(meta, findings, path):
                          f"{L('web budget reached; remaining web items were not checked this run.', '联网额度已用尽；本轮未核查依赖联网的条目。')}")
     if meta.get("llm_calls"):
         lines.append(f"- {L('LLM assistance', 'LLM 辅助')}: {meta['llm_calls']} {L('calls (free tier); LLM only judges quoted snippets, never invents verdicts.', '次调用（免费额度）；LLM 仅对引用原文判断，绝不臆造结论。')}")
+    if meta.get("semantic_rescued"):
+        lines.append(f"- {L('Semantic judge', '语义判断')}: {meta['semantic_rescued']} "
+                     f"{L('prose claims supported (support-only, medium confidence; open the attached source to confirm).', '条叙述性声明由语义匹配支持（仅支持、中等置信度；请打开所附来源确认）。')}")
     # Which host actually served the calls. Surfaced because the primary Agnes
     # host is a personal relay: if it lapsed mid-run the reader should see that
     # rather than assume every judgement came from the usual endpoint.
