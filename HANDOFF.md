@@ -14,8 +14,8 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
 ## Repo state (2026-11-09)
 
-- `main` is up to date with `origin/main`; the W1.3, search-cache, W1.4, W5
-  and W6 changes are pushed. The only untracked file is
+- `main` is up to date with `origin/main` at `3fcd37e`; the W1.3, search-cache,
+  W1.4, W5, W6 and W2 changes are pushed. The only untracked file is
   `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
   document — do not add it). `.opencode` is ignored by the tooling.
 - Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
