@@ -15,7 +15,7 @@ from .judge import judge
 from .library import Library, check_manifest
 from .llm import LLM, extract_semantic_claims
 from .names import AliasMap
-from .report import write_jsonl, write_md, write_xlsx
+from .report import coverage_counts, write_jsonl, write_md, write_xlsx
 from .textproc import detect_language
 from .web import WebBudget, WebEvidence
 
@@ -250,6 +250,7 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         "web_unsearched": sum(1 for x in findings
                               if x["verdict"] in ("unverified", "deferred_web")
                               and not x.get("_searched")),
+        "coverage": coverage_counts(findings),
         "web_exhausted": bool(web and web.budget.exhausted),
         "semantic": bool(semantic),
         "semantic_rescued": sum(1 for c in claims if c.get("_semantic")),
@@ -523,6 +524,13 @@ def main(argv=None):
     if meta.get("semantic_rescued"):
         print(f"  semantic: {meta['semantic_rescued']} prose claims supported "
               "(support-only, medium confidence)")
+    cov = meta.get("coverage") or {}
+    if cov:
+        print("  coverage: " + " · ".join(
+            f"{k.replace('_', ' ')} {cov[k]}" for k in
+            ("supported", "needs_attention", "conflicting",
+             "checked_not_found", "not_checked", "no_source",
+             "not_checkable") if cov.get(k)))
     print(f"Reports -> {Path(a.out) / 'report.md'} | report.xlsx | claims.jsonl")
     return 0
 

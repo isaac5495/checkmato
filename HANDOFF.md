@@ -1,7 +1,7 @@
 # CheckMato — Handoff
 
 Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
-precision/determinism (local, not pushed) · all gates green.
+precision/determinism + W6 coverage (local, not pushed) · all gates green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -28,10 +28,35 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   Prose still stays honestly `unverified` until W1.4, so the 90% target is
   still unreachable. Deterministic leftovers and the parked ideas are in
   `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (17 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (18 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-11 — W6 coverage split: not-checked is first class (code changed)
+
+`unverified` used to mean two different things: "we checked and found nothing"
+and "we never checked it". The second is not a negative finding.
+`app/report.py:coverage_counts()` now splits every run into:
+
+supported · needs attention · conflicting · checked-not-found · not checked ·
+no source · not checkable · structure.
+
+`report.md` opens with a one-screen coverage table; `meta["coverage"]` carries
+the same counts for the API/UI; the CLI prints a compact line.
+
+- `_lane_checked()`: `_searched` only records the WEB lane. In a `sources_only`
+  or `sources_then_web` run the deterministic judge/apply_byos pass already
+  checked the claim against the library, so its `unverified` claims are
+  "checked, not found" — not "never checked". Only a web-only run with no
+  search (or budget/cancel) lands in "not checked".
+- KS Chinese (347 claims, 5 BYOS sources): supported 81; needs attention 3;
+  checked-not-found 206; not checked 6 (deferred web); no source 32; not
+  checkable 113. The six deferred-web items are the only genuinely unrun lane.
+- `tests/test_coverage.py` 9 assertions; `tests/run_all.py` 18 suites.
+- Test hygiene: `test_webapp.py` no longer requires an `internal_conflict` from
+  the synthetic doc (W5 removed that false positive) and clears the persisted
+  guest quota before its first request.
 
 ## 2026-11-11 — W5 precision cleanup + deterministic retrieval (code changed)
 

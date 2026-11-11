@@ -59,6 +59,8 @@ def run_check(client, with_corpus=False):
 
 
 def main():
+    QUOTA.clear()
+    Path(os.environ["CHECKMATO_QUOTA_PATH"]).unlink(missing_ok=True)
     client = TestClient(app)
     h = client.get("/api/health").json()
     assert h["ok"] and h["quota"]["runs_per_day"] >= 1
@@ -78,7 +80,7 @@ def main():
         s, e = x["source_span"]["start"], x["source_span"]["end"]
         assert p[s:e] == x["quote"], f"anchor drift {x['claim_id']}"
     v = {x["verdict"] for x in recs}
-    assert {"internal_conflict", "needs_fix", "structure", "unverified"} <= v, v
+    assert {"needs_fix", "structure", "unverified"} <= v, v
     assert "contradicted" not in v and "supported" not in v, \
         "BYOS verdicts without a corpus = engine lying"
     print(f"  no-corpus run: OK ({len(events)} events, {len(recs)} records, "

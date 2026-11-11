@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -24,6 +25,78 @@ VERDICT_ORDER = ["contradicted", "internal_conflict", "misattributed",
                  "conflicting", "paraphrase_flag",
                  "needs_fix", "structure", "deferred_web", "unverified",
                  "narrative", "supported"]
+
+COVERAGE_ORDER = ["supported", "needs_attention", "conflicting",
+                  "checked_not_found", "not_checked", "no_source",
+                  "not_checkable", "structure", "other"]
+
+_COVERAGE_EN = {
+    "supported": "evidence attached",
+    "needs_attention": "contradicted, misattributed, or needs a fix",
+    "conflicting": "sources disagree — you decide",
+    "checked_not_found": "searched, but no source settled it",
+    "not_checked": "budget/cancelled/backend — NOT a negative finding",
+    "no_source": "no source supplied or found",
+    "not_checkable": "narrative/commentary",
+    "structure": "document structure, not a claim",
+    "other": "other",
+}
+_COVERAGE_ZH = {
+    "supported": "已附证据",
+    "needs_attention": "有矛盾/张冠李戴/需修正",
+    "conflicting": "来源相左，请自行裁决",
+    "checked_not_found": "已查，但没有来源能证实",
+    "not_checked": "未查（额度/取消/后端）— 不是负面结论",
+    "no_source": "没有提供或找到来源",
+    "not_checkable": "叙述/评论，无需核查",
+    "structure": "文档结构问题，不是 claim",
+    "other": "其他",
+}
+
+
+def _lane_checked(x):
+    """Was this claim evaluated by ANY available lane?
+
+    `_searched` only means the WEB lane ran. In a BYOS run the deterministic
+    judge/apply_byos pass has already checked the claim against the supplied
+    corpus, so an `unverified` there is "checked, not found", not "never
+    checked". Only a web-only run with no search is genuinely unchecked.
+    """
+    if x.get("_searched"):
+        return True
+    return str(x.get("_mode") or "") in ("sources_only", "sources_then_web")
+
+
+def coverage_counts(findings):
+    """Split `unverified` into the states a reader actually needs.
+
+    `unverified` was a grey bucket for two very different things: "we searched
+    and found nothing" and "we never checked it". The second is not a negative
+    finding, so it gets its own row; the same for no-source and narrative.
+    """
+    c = Counter()
+    for x in findings:
+        v = x.get("verdict")
+        if v == "unverified":
+            c["checked_not_found" if _lane_checked(x) else "not_checked"] += 1
+        elif v == "deferred_web":
+            c["not_checked"] += 1
+        elif v == "no_source":
+            c["no_source"] += 1
+        elif v == "narrative":
+            c["not_checkable"] += 1
+        elif v == "structure":
+            c["structure"] += 1
+        elif v in ("contradicted", "needs_fix", "internal_conflict",
+                   "misattributed", "paraphrase_flag"):
+            c["needs_attention"] += 1
+        elif v == "conflicting":
+            c["conflicting"] += 1
+        elif v == "supported":
+            c["supported"] += 1
+        else:
+            c["other"] += 1
+    return dict(c)
 
 
 def to_record(x):
@@ -202,6 +275,19 @@ def write_md(meta, findings, path):
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
     lines.append(f"- {L('Summary', '摘要')}: " + " · ".join(
         f"{v}: {counts[v]}" for v in VERDICT_ORDER if v in counts))
+    cov = coverage_counts(findings)
+    lines.append("")
+    lines.append(f"**{L('Coverage at a glance', '覆盖概览')}**")
+    lines.append("")
+    lines.append(f"| {L('State', '状态')} | {L('Count', '数量')} | {L('Meaning', '含义')} |")
+    lines.append("|---|---:|---|")
+    for key in COVERAGE_ORDER:
+        n = cov.get(key, 0)
+        if key == "other" and not n:
+            continue
+        label = L(key.replace("_", " ").title(), _COVERAGE_ZH[key])
+        meaning = L(_COVERAGE_EN[key], _COVERAGE_ZH[key])
+        lines.append(f"| {label} | {n} | {meaning} |")
     lines.append("")
     lines.append(L("> Verdicts reflect the evidence shown, nothing more. `unverified` "
                    "means no evidence was found in the provided sources — not that the claim is false.",
