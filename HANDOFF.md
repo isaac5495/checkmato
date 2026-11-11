@@ -74,10 +74,13 @@ Clue-first retrieval (shipped):
   normalised) and gives the top two source files a bounded bonus. This is not
   a filename whitelist; a game claim prefers the game-history file even when
   the exact wording is absent. `tests/test_clue_retrieval.py` 12 assertions.
-- The evaluation library currently has **5** sources; the earlier 20-label run
-  used **7**. `金山高管团队访谈` is not in the 5-source folder, so c364/c365
-  retrieval misses may be a **library gap**, not a code failure. Rebuild the
-  eval library with the full interview source before judging those two.
+- The evaluation library now includes the interview source found at
+  `C:\Users\user\Desktop\KS CASE STUDY\20250913会议总结.txt` (2025-09-13;
+  cited as 金山高管团队访谈). c364/c365 still miss because the source says
+  `吃饭 / 运动会 / 竞技` and `MBO / 传承`, not `聚餐 / 体育联赛 / 五步战略`.
+  This is a **paraphrase retrieval** gap, not a missing file; lexical clue
+  lane + source routing cannot bridge it. W2 semantic retrieval (embeddings
+  or LLM query expansion) is the next real lever.
 - `run_all.py` 20 suites.
 - **Pipeline baseline** (`tests/run_nli_gold.py`, Agnes, 5-source library):
   supported **7/22**, not_supported **0/6**, partial **0/1** (correctly
@@ -102,8 +105,10 @@ Still open from the review:
   `unverified` + "Partial support: 3/4 elements found; missing: …", never a
   green. The check runs on the MODEL'S QUOTE, not the unquoted candidate
   passage (c326).
-- Interview-source gap: add `金山高管团队访谈` to the eval library before
-  judging c364/c365; source routing itself is shipped.
+- W2 paraphrase retrieval: the interview source exists, but c364/c365 use
+  `聚餐/体育联赛/五步战略` while the source says `吃饭/运动会/竞技/MBO`.
+  Lexical retrieval cannot bridge this; embeddings or LLM query expansion is
+  the next recall lever.
 - W1.4 exact evidence narrowing: the prompt now ranks evidence and prefers
   the highest-ranked supporting passage; the report already attaches only the
   chosen passage. Still to verify on the reviewed 50.
