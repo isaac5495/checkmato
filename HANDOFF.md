@@ -72,10 +72,10 @@ existing lexical lanes and never downloads a model.
   fingerprint includes a content hash; cosine is clamped at 0 so the lane can
   only add recall, never penalize a lexical candidate.
 - c364/c365 remain unverified: the source says `吃饭/运动会/竞技` and
-  `MBO/传承`, while the claims say `聚餐/体育联赛/内部竞赛` and `五步战略`
-  (the latter only in c428). c364 is a defensible paraphrase; c365 is an
-  interpretive thesis ("降低对创始人的个人依赖") that may merit a
-  `narrative` re-review rather than more retrieval work.
+  `MBO/传承`, while c364 says `聚餐/体育联赛/内部竞赛`. c364 is a defensible
+  paraphrase; c365 is an interpretive thesis ("降低对创始人的个人依赖") that
+  may merit a `narrative` re-review rather than more retrieval work. (c428's
+  `五步战略` is a different claim.)
 
 ## 2026-11-11 — W1.4 false-green guards + c381 label correction (code changed)
 
