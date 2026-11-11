@@ -43,6 +43,9 @@ DEFAULTS = {
     "search_cache": True,
     "search_cache_days": 14,
     "search_cache_path": "",
+    # Optional W2 semantic retrieval (fastembed + bge-small). Off by default:
+    # base install and offline gates never import/download a model.
+    "semantic_retrieval": False,
     # Free tier: web search is a 40-request cap per document (not a floor).
     # BYOS-only is the unlimited/zero-search option; the cap only applies to
     # hosted guest runs where enforce_ip_quota is true.

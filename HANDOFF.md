@@ -1,8 +1,8 @@
 # CheckMato — Handoff
 
 Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
-precision/determinism + W6 coverage + free tier/UI + clue retrieval (pushed) ·
-20 suites green.
+precision/determinism + W6 coverage + free tier/UI + clue/source retrieval +
+W2 semantic retrieval (local, experimental/default off) · 21 suites green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -23,15 +23,77 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
   0 contradicted, ≤ **$0.0405**. DeepSeek bills successful requests only
   ($0.00075 each); page deep-reads are direct HTTP and free.
-- Next session: W1.4's real true-prose exit-gate eval (the synthetic 50-case
-  proxy is green, but the real 20 labels are diagnostic); W3 citation lane;
-  W4 scanned PDFs; W6 UI labels. W1.4 stays opt-in and default off until the
-  real gate passes. Deterministic leftovers and the parked ideas are in
-  `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (20 suites) plus `test_byos.py` (48),
+- Next session: the real W1.4/W2 exit gate on DeepSeek when its key recovers
+  (Agnes is stochastic and is not the production judge); W3 citation lane;
+  W4 scanned PDFs; W6 UI labels. W1.4 and `--semantic-retrieval` stay opt-in
+  and default off until the real gate passes. Deterministic leftovers and the
+  parked ideas are in `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings"
+  below.
+- Verification set: `tests\run_all.py` (21 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-11 — W2 semantic retrieval (optional local embeddings) (code changed)
+
+User chose A: a local embedding model for paraphrase recall. Base install is
+unchanged: `app/embeddings.py` imports `fastembed` only when
+`CHECKMATO_SEMANTIC=1` / `--semantic-retrieval`; otherwise `Corpus` uses the
+existing lexical lanes and never downloads a model.
+
+- Models: `BAAI/bge-small-zh-v1.5` (zh) / `bge-small-en-v1.5` (en) through
+  fastembed + ONNX runtime; no torch. Optional extra:
+  `requirements-semantic.txt` (`fastembed>=0.9`). First enable downloads the
+  model (~100 MB) into the fastembed cache; later runs reuse it.
+- `SemanticIndex`: lazy model load, CPU embeddings, cosine top-k, disk cache
+  keyed by a corpus fingerprint; `get_index()` is language-aware.
+- `Corpus.find_prose_candidates()` adds a semantic lane (`30 * cosine`) and
+  dedupes against lexical passages; BM25/rare/literal/clue/source lanes remain.
+- CLI `--semantic-retrieval`; config `semantic_retrieval=false`; server passes
+  it; `tests/run_nli_gold.py --semantic-retrieval` for the manual gold gate.
+- Why: c364 uses `聚餐/体育联赛/内部竞赛` while the interview source says
+  `吃饭/运动会/竞技`; lexical retrieval cannot bridge that paraphrase.
+- Tests: `test_embeddings.py` 7 assertions (fake model, cache reuse,
+  off-by-default, model override); `run_all.py` 21 suites.
+- Semantic gold eval (Agnes, reviewed 50; c381 relabelled `supported`):
+  lexical **8/23** supported, semantic **7/23**; not_supported **0/6** both,
+  partial **0/1** both, narrative **0/18**, unclear **0/2**. No measured recall
+  gain from the embeddings with the current judge; the false-green guards, not
+  the lane, are the quality win.
+- **Caveat:** one semantic run produced **3/6 false supports** (c329, c340,
+  c391); the next run produced 0/6. The judge is stochastic on the Agnes
+  fallback, so the semantic lane is **not production-safe** there. Keep it off
+  until the DeepSeek gate passes. Single-run variance is also visible on true
+  supports (c398/c372 vs c389/c374/c430/c385).
+- `_pick_local()` keeps at least one lexical-lane and one semantic-lane
+  passage in the 3 evidence slots (lane membership, not just a cosine score),
+  so a semantic hit cannot evict the exact passage.
+- Query embeddings use `query_embed()` (BGE asymmetric instruction); the cache
+  fingerprint includes a content hash; cosine is clamped at 0 so the lane can
+  only add recall, never penalize a lexical candidate.
+- c364/c365 remain unverified: the source says `吃饭/运动会/竞技` and
+  `MBO/传承`, while the claims say `聚餐/体育联赛/内部竞赛` and `五步战略`
+  (the latter only in c428). c364 is a defensible paraphrase; c365 is an
+  interpretive thesis ("降低对创始人的个人依赖") that may merit a
+  `narrative` re-review rather than more retrieval work.
+
+## 2026-11-11 — W1.4 false-green guards + c381 label correction (code changed)
+
+- List claims: `_list_gap()` now checks the model's **quote**, not just the
+  candidate passage. A list with 2–3 of 4 elements found stays `unverified` +
+  "Partial support"; a quote naming only **0–1** elements is rejected as
+  "Evidence covers only N/4 …". This fixes c326 (a four-product list
+  "supported" by a passage that named none of the products).
+- Table/financial rows: `_is_table_row()` rejects any claim with ≥3 `|` cells
+  and ≥2 numeric cells from NLI eligibility. c417 was "supported" by a garbage
+  heading (`##### 公司 4 4 4 4`). The regression test uses synthetic FY2099
+  figures, not the private case numbers.
+- c381: reviewed gold corrected to `supported`. `生生不息.md:1544` has
+  雷军's attributed quote ("雷军说：…"); line 1542 is only the passage start
+  ("勇气非凡。"). The old "section title" diagnosis was wrong.
+- `tests/test_nli.py` 27 assertions (including semantic-crowding selection);
+  `tests/run_all.py` 21 suites PASS; `test_no_case_literals.py` PASS (removed
+  an `Acme` docstring from `nli.py`).
 
 ## 2026-11-11 — 50-item gold review + clue-first retrieval (code changed)
 
@@ -42,23 +104,28 @@ the missing narrative/retrieval judgement. Reviewed labels:
 Review breakdown:
 - **18/50 narrative/not checkable** (1,2,3,5,7,16,19,20,24,28,31,35,36,38,
   42,44,48,50).
-- 21 supported, 7 not supported, 1 **partial** (c326: only 金山快译 missing),
-  3 unclear/online.
+- 22 supported, 7 not supported, 1 **partial** (c326: only 金山快译 missing),
+  2 unclear/online (c417 table row, c419).
 - Retrieval misses despite true claims: 28元定价 (c331), 3.2英寸 /
   Microsoft-mobile (c370), 剑网3 / 西山志 (c357), 十年为维度 (c380),
   金山高管团队访谈 (c364/c365), ALL IN AI (c430), 金山快译 (c326).
-- Quote/title: c381 was supported from a section heading
-  (“不怕死的决心和向死而生的勇气”), not attributed speech.
+- Quote/title: c381 was **mislabelled** as a section-title support. The source
+  has 雷军's attributed quote at `生生不息.md:1544` ("雷军说：…如果没有这种
+  不怕死的决心和向死而生的勇气，做金山云我觉得没戏。"); the earlier diagnosis
+  looked at the passage start (1542), not the quote line. Reviewed label is now
+  `supported`.
 - Multi-company/compositional: c404 (Xiaomi + Kingsoft) is narrative, not one
   checkable fact.
 - Exact evidence: c398 has one perfect passage (`生生不息.md:2233`) plus two
   irrelevant; W1.4 should narrow to the perfect one.
 
-Baseline on the 50 (Agnes relay; DeepSeek was unavailable/rate-limited):
+First baseline on the 50 (Agnes relay; DeepSeek was unavailable/rate-limited;
+superseded by the clue/W2 runs below):
 - supported **2/22**, not_supported **0/6**, narrative **3/18 false**,
   partial 0/1, unclear 1/3.
-- The 3 narrative false supports and the c381 quote-title false support are
-  quality bugs; the 2/22 recall is mostly retrieval + model weakness.
+- The 3 narrative false supports are quality bugs; the 2/22 recall is mostly
+  retrieval + model weakness. (c381 was later found to be a real attributed
+  quote; the old "quote-title" label was wrong.)
 - DeepSeek-only rerun produced 0 output (3 calls, 0 tokens, net_dead); rerun
   when the key recovers before treating this as the production baseline.
 
@@ -77,18 +144,20 @@ Clue-first retrieval (shipped):
 - The evaluation library now includes the interview source found at
   `C:\Users\user\Desktop\KS CASE STUDY\20250913会议总结.txt` (2025-09-13;
   cited as 金山高管团队访谈). c364/c365 still miss because the source says
-  `吃饭 / 运动会 / 竞技` and `MBO / 传承`, not `聚餐 / 体育联赛 / 五步战略`.
+  `吃饭 / 运动会 / 竞技` and `MBO / 传承`, not `聚餐 / 体育联赛 / 内部竞赛`.
   This is a **paraphrase retrieval** gap, not a missing file; lexical clue
   lane + source routing cannot bridge it. W2 semantic retrieval (embeddings
   or LLM query expansion) is the next real lever.
-- `run_all.py` 20 suites.
+- `run_all.py` 21 suites.
 - **Pipeline baseline** (`tests/run_nli_gold.py`, Agnes, 5-source library):
-  supported **7/22**, not_supported **0/6**, partial **0/1** (correctly
-  unverified), narrative **skipped 18/18**, unclear 0/3. The new heading and
-  short-quote guards fixed c381 (title) and c326 (partial). DeepSeek still
-  returns 0 output (3 calls, 0 tokens), so this is not the production judge
-  baseline. `tests/run_nli_gold.py` is the reusable manual evaluator (labels +
-  library args; no private literals).
+  the pre-relabel run was supported **7/22**, not_supported **0/6**, partial
+  **0/1** (correctly unverified), narrative **skipped 18/18**, unclear 0/3.
+  After the c381 relabel and the 0–1 list/table guards, lexical is **8/23** and
+  semantic **7/23**, both with **0/6** not_supported false greens. c381 is a
+  real attributed quote, so it no longer belongs in the "unclear" bucket.
+  DeepSeek still returns 0 output (3 calls, 0 tokens), so this is not the
+  production judge baseline. `tests/run_nli_gold.py` is the reusable manual
+  evaluator (labels + library args; no private literals).
 
 Still open from the review:
 - W1.2 narrative eligibility: the combined deterministic floor +
@@ -97,14 +166,17 @@ Still open from the review:
   are a known trade-off: dropping a true claim is a coverage loss, not a false
   green. Remaining misses: c307, c333, c393.
 - Quote attribution guard: shipped for markdown headings/titles **and** in
-  W1.4 (a heading line is not attributed speech); c381 now unverified.
+  W1.4 (a heading line is not attributed speech). c381 turned out to be a real
+  attributed quote at `生生不息.md:1544`; the old label was corrected, so it is
+  no longer a guard regression.
 - Multi-company/compositional guard: shipped for explicit org names
   (`_CJK_ORG` + `detect_entities`); c404's implicit "两家公司" still needs the
   LLM triage.
-- Partial-support state (A): shipped — a list with 3/4 elements found becomes
-  `unverified` + "Partial support: 3/4 elements found; missing: …", never a
-  green. The check runs on the MODEL'S QUOTE, not the unquoted candidate
-  passage (c326).
+- Partial-support state (A): shipped — a list with 2–3 of 4 elements found
+  becomes `unverified` + "Partial support: N/4 elements found; missing: …".
+  A quote naming only **0 or 1** of the listed elements is rejected outright
+  ("Evidence covers only N/4 …"), never a partial green. The check runs on the
+  MODEL'S QUOTE, not the unquoted candidate passage (c326).
 - W2 paraphrase retrieval: the interview source exists, but c364/c365 use
   `聚餐/体育联赛/五步战略` while the source says `吃饭/运动会/竞技/MBO`.
   Lexical retrieval cannot bridge this; embeddings or LLM query expansion is

@@ -40,20 +40,95 @@ def _ctx(claim):
             or "")
 
 
+_TABLE_CELL_NUM = re.compile(
+    r"^[\s¥￥$€£]*[-+]?\d[\d,]*(?:\.\d+)?\s*(?:%|％|万|亿|元|美元)?$")
+
+
+def _is_table_row(claim):
+    """A markdown table/financial row is structure, not a checkable sentence.
+
+    The extractor keeps a row as one "sentence", so without this guard a row
+    such as `revenue | 1,234 | 5,678` can be "supported" by any passage that
+    happens to share a label. Two or more numeric cells mean there is no
+    predicate to entail; skip it.
+    """
+    text = str(_ctx(claim) or "")
+    if text.count("|") < 2:
+        return False
+    cells = [c.strip() for c in text.split("|")]
+    if len(cells) < 3:
+        return False
+    numeric = sum(1 for c in cells if _TABLE_CELL_NUM.match(c))
+    return numeric >= 2
+
+
 def _eligible(claim):
     return (claim.get("verdict") == "unverified"
             and claim.get("type") in PROSE_TYPES
+            and not _is_table_row(claim)
             and not claim.get("_dup_of")
             and not claim.get("fx_secondary")
             and not (claim.get("citation") and claim.get("type") != "url")
             and not str(claim.get("_skip_reason") or "").startswith("citation"))
 
 
+def _pick_local(cands, k):
+    """Keep rank order, but never let the semantic lane evict all lexical proof.
+
+    When semantic retrieval is on, its top hits can outscore an exact passage
+    that lexical retrieval already found. The NLI prompt only receives k
+    passages, so losing that exact hit is a quality loss. Reserve at least one
+    slot for a pure-lexical candidate and one for a semantic candidate when
+    both lanes are present; when semantic is off every candidate is lexical
+    and this is a plain top-k.
+    """
+    picked, seen = [], set()
+
+    def add(p, replace_tail=False):
+        key = (p.get("fname"), p.get("start"))
+        if key in seen:
+            return
+        seen.add(key)
+        if replace_tail and len(picked) >= k:
+            picked[k - 1] = p
+        else:
+            picked.append(p)
+
+    def lanes(p):
+        why = p.get("why") or {}
+        raw = why.get("lanes")
+        if raw:
+            return set(raw)
+        # Older/fake callers may only expose the semantic score.
+        return {"semantic"} if why.get("semantic", 0) > 0 else {"lexical"}
+
+    def has_sem(p):
+        return "semantic" in lanes(p)
+
+    def has_lex(p):
+        return any(lane != "semantic" for lane in lanes(p))
+
+    for p in cands[:k]:
+        add(p)
+    if any(has_sem(p) for p in cands) and not any(has_sem(p) for p in picked):
+        for p in cands:
+            if has_sem(p):
+                add(p, replace_tail=True)
+                break
+    elif any(has_lex(p) for p in cands) and not any(has_lex(p) for p in picked):
+        for p in cands:
+            if has_lex(p):
+                add(p, replace_tail=True)
+                break
+    return picked[:k]
+
+
 def _local_evidence(claim, corpus, k=MAX_LOCAL):
     out = []
     ctx = _ctx(claim)
     if corpus is not None and ctx:
-        for p in (corpus.find_prose_candidates(ctx, top=k) or []):
+        cands = corpus.find_prose_candidates(ctx, top=max(k * 3, 9)) or []
+        for p in _pick_local(cands, k):
             text = (p.get("text") or "").strip()
             if not text:
                 continue
@@ -120,6 +195,23 @@ def _list_items(text):
     return list(dict.fromkeys(out))
 
 
+def _list_gap(claim, evidence_text):
+    """List elements missing from this evidence text (0..total).
+
+    Includes 0-1 found: evidence may share the topic while naming none of the
+    listed elements. That is not partial support and must never become a green.
+    """
+    items = _list_items(_ctx(claim))
+    if len(items) < 3:
+        return None
+    text = tp.normalize(evidence_text)
+    found = [x for x in items if tp.normalize(x) in text]
+    if len(found) >= len(items):
+        return None
+    return {"found": len(found), "total": len(items),
+            "missing": [x for x in items if x not in found]}
+
+
 def _partial_note(claim, evidence_text):
     """Most elements present, not all: a partial, not a green.
 
@@ -127,14 +219,9 @@ def _partial_note(claim, evidence_text):
     stays supported/unverified (user decision A); the note says exactly which
     element is missing, so the reader never sees a false green.
     """
-    items = _list_items(_ctx(claim))
-    if len(items) < 3:
-        return None
-    text = tp.normalize(evidence_text)
-    found = [x for x in items if tp.normalize(x) in text]
-    missing = [x for x in items if x not in found]
-    if 2 <= len(found) < len(items):
-        return {"found": len(found), "total": len(items), "missing": missing}
+    note = _list_gap(claim, evidence_text)
+    if note and note["found"] >= 2:
+        return note
     return None
 
 
@@ -157,7 +244,7 @@ def _claim_entities(claim):
 def _multi_entity_note(claim, evidence_text):
     """Evidence names one subject, the sentence names two: not a support.
 
-    'Acme and Orion opened an office' cannot be settled by an Acme-only page.
+    'Alpha and Beta opened an office' cannot be settled by an Alpha-only page.
     """
     ents = _claim_entities(claim)
     if len(ents) < 2:
@@ -194,6 +281,17 @@ def _mark_partial(claim, note):
     claim["suggestion"] = (
         f"Partial support: {note['found']}/{note['total']} elements found; "
         f"missing: {', '.join(note['missing'])}. Not counted as supported.")
+
+
+def _mark_list_gap(claim, note):
+    """Evidence names almost none of the list: reject the support outright."""
+    claim["verdict"] = "unverified"
+    claim["confidence"] = "low"
+    claim["_partial"] = note
+    claim["suggestion"] = (
+        f"Evidence covers only {note['found']}/{note['total']} listed "
+        f"elements; missing: {', '.join(note['missing'])}. "
+        "Not counted as supported.")
 
 
 def _prompt(items):
@@ -331,9 +429,12 @@ def judge(llm, claims, corpus=None, web=None, progress=None,
             # The reader sees the model's QUOTE, not the whole candidate
             # passage. A support is only complete if the quote itself carries
             # every listed element; otherwise it is a partial, never a green.
-            quote_partial = _partial_note(c, quote)
-            if quote_partial:
-                _mark_partial(c, quote_partial)
+            quote_gap = _list_gap(c, quote)
+            if quote_gap:
+                if quote_gap["found"] >= 2:
+                    _mark_partial(c, quote_gap)
+                else:
+                    _mark_list_gap(c, quote_gap)
                 continue
             if _heading_quote(c, evs[i - 1]["text"], quote):
                 c["suggestion"] = (

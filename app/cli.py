@@ -35,7 +35,8 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
         max_search=60, whitelist=None, fx_rates=None, names=None, cfg=None,
         progress=None, cancel=None, backend="deepseek", library=None,
         sources_only=False, footnotes=False, refresh_search=False,
-        no_search_cache=False, semantic=False, free_tier=False):
+        no_search_cache=False, semantic=False, free_tier=False,
+        semantic_retrieval=False):
     _p = progress or (lambda e: None)
     cancelled_midrun = False
     from . import config as _cfg
@@ -43,6 +44,8 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     from . import llm as llm_mod
     from .textproc import clean_name, detect_cjk_entities, detect_entities
     cfg = cfg or _cfg.load()
+    if semantic_retrieval or cfg.get("semantic_retrieval"):
+        os.environ["CHECKMATO_SEMANTIC"] = "1"
     import corpus as _corpus_mod
     _corpus_mod.VERBATIM_CUT = cfg["quote_verbatim_cut"]
     _corpus_mod.PARAPHRASE_CUT = cfg["quote_paraphrase_cut"]
@@ -443,6 +446,10 @@ def main(argv=None):
                     help="hosted free-tier mode: hard-cap web search at "
                          "free_tier_search_cap (40) per document; unchecked "
                          "claims are labelled not checked")
+    ap.add_argument("--semantic-retrieval", action="store_true",
+                    help="W2: local embedding retrieval for BYOS passages "
+                         "(needs the optional fastembed extra); experimental, "
+                         "default off")
     ap.add_argument("--refresh-search", action="store_true",
                     help="ignore the persistent search cache (still refreshes it)")
     ap.add_argument("--no-search-cache", action="store_true",
@@ -467,6 +474,8 @@ def main(argv=None):
     from . import estimate as est
     cfg = load_cfg(a.config)
     if a.estimate:
+        if a.semantic_retrieval or cfg.get("semantic_retrieval"):
+            os.environ["CHECKMATO_SEMANTIC"] = "1"
         stats = est.analyze(a.doc, a.corpus, a.names)
         e = est.estimate(stats, {**cfg, "max_search": a.max_search or cfg["max_search"]},
                          web=a.web or a.llm, llm=a.llm,
@@ -504,7 +513,8 @@ def main(argv=None):
                           refresh_search=a.refresh_search,
                           no_search_cache=a.no_search_cache,
                           semantic=a.semantic,
-                          free_tier=a.free_tier)
+                          free_tier=a.free_tier,
+                          semantic_retrieval=a.semantic_retrieval)
     counts = {}
     for x in findings:
         counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1

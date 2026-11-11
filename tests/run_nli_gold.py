@@ -14,6 +14,7 @@ skipped by eligibility (unless --include-narrative); unclear -> excluded.
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -45,12 +46,17 @@ def main():
                     choices=("auto", "deepseek", "agnes"))
     ap.add_argument("--include-narrative", action="store_true",
                     help="do not pre-mark narrative labels; tests false support")
+    ap.add_argument("--semantic-retrieval", action="store_true",
+                    help="enable the optional W2 embedding lane")
     ap.add_argument("--out", default="reports/w1-gold-50-eval.json")
     a = ap.parse_args()
 
     from app import nli
     from app.corpus import Corpus
     from app.llm import LLM
+
+    if a.semantic_retrieval:
+        os.environ["CHECKMATO_SEMANTIC"] = "1"
 
     labels = json.loads(Path(a.labels).read_text(encoding="utf-8"))["labels"]
     claims = build_claims(labels, include_narrative=a.include_narrative)

@@ -24,6 +24,16 @@ class FakeCorpus:
         return self.passages[:top]
 
 
+class FakeRankedCorpus:
+    """Candidates already carry a `why.semantic` score, like the real corpus."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def find_prose_candidates(self, text, top=3):
+        return self.rows[:top]
+
+
 class FakeWeb:
     def __init__(self, pool):
         self._pool = pool
@@ -106,12 +116,44 @@ def main():
     got = nli.judge(llm, [c], corpus=corpus)
     ok(got == 0 and not llm.prompts, "numeric claims keep their deterministic check")
 
+    # 4b. A markdown table / financial row is structure, not a sentence. It
+    # must never be "supported" by a passage that merely shares a label.
+    row = "收入——FY2099 | 1,111.1 | 2,222.2 | 3,333.3"
+    c = claim(raw=row, sentence=row, sentence_context=row,
+              context_sentence=row)
+    llm = FakeLLM([])
+    got = nli.judge(llm, [c], corpus=corpus)
+    ok(got == 0 and not llm.prompts and c["verdict"] == "unverified",
+       "a numeric table row never enters the semantic lane")
+
     # 5. No evidence -> no call, no verdict change.
     c = claim()
     llm = FakeLLM([])
     got = nli.judge(llm, [c], corpus=FakeCorpus([]), web=None)
     ok(got == 0 and not llm.prompts and c["verdict"] == "unverified",
        "no evidence means no semantic call")
+
+    # 5b. Semantic hits must not evict the exact lexical passage from the
+    # three evidence slots: keep one pure-lexical and at least one semantic.
+    rows = [
+        {"fname": "sem1.md", "start": 1, "text": "semantic filler one",
+         "why": {"semantic": 0.9}},
+        {"fname": "sem2.md", "start": 2, "text": "semantic filler two",
+         "why": {"semantic": 0.8}},
+        {"fname": "sem3.md", "start": 3, "text": "semantic filler three",
+         "why": {"semantic": 0.7}},
+        {"fname": "exact.md", "start": 4, "text": PASSAGE,
+         "why": {"semantic": 0.0}},
+    ]
+    c = claim()
+    llm = FakeLLM([])
+    got = nli.judge(llm, [c], corpus=FakeRankedCorpus(rows), web=None)
+    ok(got == 0 and PASSAGE in llm.prompts[0],
+       "lexical proof survives semantic crowding")
+    ok("semantic filler three" not in llm.prompts[0],
+       "the weakest semantic hit is the one displaced")
+    ok("semantic filler one" in llm.prompts[0],
+       "at least one semantic hit is kept")
 
     # 6. Web evidence works when the library has no passage.
     c = claim()
@@ -164,6 +206,40 @@ def main():
        "a short quote cannot prove a longer list")
     ok(c.get("_partial") and c["_partial"]["missing"] == ["华光四"],
        "partial checks the quote, not the unquoted passage")
+
+    # 8c. A quote that names NONE of the listed elements is unrelated evidence,
+    # not a partial support and never a green (regression: a product list was
+    # once "supported" by a passage that merely shared the company name).
+    c = claim(raw="产品包括华光一、华光二、华光三、华光四。",
+              sentence="产品包括华光一、华光二、华光三、华光四。",
+              sentence_context="产品包括华光一、华光二、华光三、华光四。",
+              context_sentence="产品包括华光一、华光二、华光三、华光四。")
+    unrelated = "公司决定继续投入办公软件，并开辟新的战场。"
+    llm = FakeLLM([json.dumps([{
+        "id": "c1", "ev": 1, "verdict": "supported",
+        "quote": unrelated, "note": "unrelated"}])])
+    got = nli.judge(llm, [c], corpus=FakeCorpus([
+        {"fname": "other.md", "start": 1, "end": 1, "text": unrelated}]))
+    ok(got == 0 and c["verdict"] == "unverified",
+       "a quote naming none of the list is not a green")
+    ok(c.get("_partial") and c["_partial"]["found"] == 0,
+       f"the 0/4 gap is recorded ({c.get('_partial')})")
+    ok("0/4" in c.get("suggestion", ""), "the gap states the count")
+
+    # 8d. One element out of four is still not enough to call support.
+    c = claim(raw="产品包括华光一、华光二、华光三、华光四。",
+              sentence="产品包括华光一、华光二、华光三、华光四。",
+              sentence_context="产品包括华光一、华光二、华光三、华光四。",
+              context_sentence="产品包括华光一、华光二、华光三、华光四。")
+    one = "产品包括华光一。"
+    llm = FakeLLM([json.dumps([{
+        "id": "c1", "ev": 1, "verdict": "supported",
+        "quote": one, "note": "one product"}])])
+    got = nli.judge(llm, [c], corpus=FakeCorpus([
+        {"fname": "one.md", "start": 1, "end": 1, "text": one}]))
+    ok(got == 0 and c["verdict"] == "unverified" and
+       c.get("_partial", {}).get("found") == 1,
+       f"1/4 elements is not a green ({c.get('_partial')})")
 
     # 9. Multi-subject: evidence covers Acme, sentence also names Orion ->
     # not one checkable subject.

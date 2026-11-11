@@ -1,0 +1,4 @@
+# Optional W2 semantic retrieval (user decision A).
+# Base install works without this file; the semantic lane stays off unless
+# CHECKMATO_SEMANTIC=1 / --semantic-retrieval is used.
+fastembed>=0.9

@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from . import textproc as tp
@@ -161,6 +162,12 @@ class Corpus:
             self.file_tokens.setdefault(fname, set()).update(toks)
         self.passages = []
         self._build_passages()
+        self._semantic = None
+        sample = " ".join((line[2] or "")[:120] for line in self.lines[:60])
+        cjk = sum(1 for ch in sample if "\u4e00" <= ch <= "\u9fff")
+        self.semantic_lang = ("zh" if cjk and cjk >= max(4, len(sample) * 0.03)
+                              else "en")
+        self._semantic_sample = sample
         self.value_index = {}
         for i, line in enumerate(self.lines):
             for v in tp.extract_values(line[2]):
@@ -443,6 +450,34 @@ class Corpus:
                 return p
         return None
 
+    def semantic_search(self, text, top=8):
+        """Optional local-embedding lane (W2). Off unless CHECKMATO_SEMANTIC=1.
+
+        Base install has no fastembed; the call then returns [] and every
+        lexical lane behaves exactly as before. The index is built once and
+        cached on disk by corpus fingerprint.
+        """
+        if os.environ.get("CHECKMATO_SEMANTIC") != "1":
+            return []
+        if self._semantic is False:
+            return []
+        if self._semantic is None:
+            try:
+                from .embeddings import get_index
+                self._semantic = get_index(self.passages,
+                                           text=self._semantic_sample,
+                                           lang=self.semantic_lang)
+            except Exception as e:
+                log.warning("semantic retrieval unavailable: %s", e)
+                self._semantic = False
+        if not self._semantic:
+            return []
+        try:
+            return self._semantic.search(text, top=top)
+        except Exception as e:
+            log.warning("semantic search failed: %s", e)
+            return []
+
     def _source_file_scores(self, text):
         """Top two source files by content overlap (soft topic prior).
 
@@ -480,13 +515,20 @@ class Corpus:
         rare = self.rare_tokens(text, k=12)
         clues = tp.clue_terms(text)
         top_files = self._source_file_scores(text)
-        if not rare and not clues:
+        sem_hits = self.semantic_search(text, top=max(top * 2, 8))
+        sem_scores = {(p.get("fname"), p.get("start")): s
+                      for s, p in sem_hits}
+        if not rare and not clues and not sem_hits:
             return []
 
         pool, seen = [], set()
+        lanes = {}
 
         def add(base, p, lane):
             key = (p.get("fname"), p.get("start"))
+            lanes.setdefault(key, [])
+            if lane not in lanes[key]:
+                lanes[key].append(lane)
             if key in seen:
                 return
             seen.add(key)
@@ -525,6 +567,10 @@ class Corpus:
                     add(0.0, {"fname": fname, "start": lineno, "end": lineno,
                               "text": raw, "tokens": tp.tokens(raw),
                               "precision": precision}, "clue")
+        # Semantic lane: paraphrase recall. Only present when the optional
+        # fastembed model is enabled.
+        for _s, p in sem_hits:
+            add(0.0, p, "semantic")
 
         claim_norm = tp.normalize(text)
         scored = []
@@ -552,6 +598,7 @@ class Corpus:
             fname = p.get("fname") or ""
             src_rank = top_files.index(fname) if fname in top_files else -1
             src_bonus = 8.0 if src_rank == 0 else 4.0 if src_rank == 1 else 0.0
+            sem = max(0.0, sem_scores.get((p.get("fname"), p.get("start")), 0.0))
             # A source whose filename names the claim's subject (金山) is a
             # better lead than a same-topic paragraph from another company
             # (西山志). Soft bonus only: it can break a near-tie, not invent
@@ -565,15 +612,18 @@ class Corpus:
                      + 18.0 * len(unique_hits) + 3.0 * min(coverage, 6)
                      + 6.0 * len(title_hits)
                      + 40.0 * len(clue_hits) + 10.0 * clue_score
-                     + src_bonus
+                     + src_bonus + 30.0 * sem
                      + 0.5 * phrase_len * phrase_len)
             item = dict(p)
             item["score"] = round(score, 6)
-            item["why"] = {"lane": lane, "rare": rare_hits[:6],
+            item["why"] = {"lane": lane,
+                           "lanes": lanes.get((p.get("fname"), p.get("start")),
+                                              [lane]),
+                           "rare": rare_hits[:6],
                            "literal": lit_hits[:6], "unique": unique_hits[:4],
                            "coverage": coverage, "title": title_hits[:4],
                            "clue": clue_hits[:4], "source": fname if src_rank >= 0 else "",
-                           "phrase": phrase_len}
+                           "semantic": round(sem, 3), "phrase": phrase_len}
             scored.append(item)
         scored.sort(key=lambda p: (-p["score"], p.get("fname") or "",
                                    p.get("start") or 0))
