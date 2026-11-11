@@ -198,7 +198,9 @@ def _prompt(items):
         "different event, value, place, role, time or organisation, omit the "
         "claim. Never use outside knowledge. Never report a contradiction; "
         "omit instead. The quote MUST be a verbatim substring of that claim's "
-        "own evidence. Return ONLY a JSON array of "
+        "own evidence. Prefer the highest-ranked evidence item that actually "
+        "supports the claim; use a lower item only when it is the direct proof. "
+        "Return ONLY a JSON array of "
         '{"id":"<claim id>","ev":<evidence number in that claim\'s block>,'
         '"verdict":"supported","quote":"<verbatim proof>",'
         '"note":"<one short sentence>"}.\n\n'

@@ -69,7 +69,16 @@ Clue-first retrieval (shipped):
 - `Corpus.find_prose_candidates()` adds a **clue lane** (literal Ctrl+F) and
   a strong clue score, so the decisive string is not lost by the generic
   rare-token ranking.
-- `tests/test_clue_retrieval.py` 10 assertions; `run_all.py` 20 suites.
+- **Source routing (shipped):** `Corpus._source_file_scores()` computes a
+  content-based per-file prior (token overlap weighted by IDF, length-
+  normalised) and gives the top two source files a bounded bonus. This is not
+  a filename whitelist; a game claim prefers the game-history file even when
+  the exact wording is absent. `tests/test_clue_retrieval.py` 12 assertions.
+- The evaluation library currently has **5** sources; the earlier 20-label run
+  used **7**. `金山高管团队访谈` is not in the 5-source folder, so c364/c365
+  retrieval misses may be a **library gap**, not a code failure. Rebuild the
+  eval library with the full interview source before judging those two.
+- `run_all.py` 20 suites.
 
 Still open from the review:
 - W1.2 narrative eligibility: the combined deterministic floor +
@@ -85,9 +94,11 @@ Still open from the review:
 - Partial-support state (A): shipped — a list with 3/4 elements found becomes
   `unverified` + "Partial support: 3/4 elements found; missing: …", never a
   green.
-- Source routing (game → 西山志; interview → 金山高管团队访谈) remains open.
-- W1.4 exact evidence narrowing remains open (the sheet shows top-3; W1.4
-  attaches only the passage it actually used).
+- Interview-source gap: add `金山高管团队访谈` to the eval library before
+  judging c364/c365; source routing itself is shipped.
+- W1.4 exact evidence narrowing: the prompt now ranks evidence and prefers
+  the highest-ranked supporting passage; the report already attaches only the
+  chosen passage. Still to verify on the reviewed 50.
 
 ## 2026-11-11 — free tier (BYOS-only + 40-search lite) + W6 UI (code changed)
 

@@ -55,6 +55,25 @@ def main():
             ok(any(needle in (p.get("text") or "") for p in cands),
                f"clue lane finds {needle!r} in top-3")
 
+    # Source routing: a game claim should prefer the game-history file even
+    # when the exact wording is absent. Content-based, not a filename list.
+    with tempfile.TemporaryDirectory() as td:
+        Path(td, "games.md").write_text(
+            "华光游戏工作室发布了剑网引擎。\n"
+            "游戏玩家在副本中组队，职业与门派系统不断更新。\n"
+            "游戏实机演示展示了新的战斗场景。\n",
+            encoding="utf-8")
+        Path(td, "finance.md").write_text(
+            "华光的营收与利润在2020年增长。\n"
+            "公司完成融资，财报显示现金流改善。\n"
+            "股价与市值在上市后波动。\n",
+            encoding="utf-8")
+        corpus = Corpus(td)
+        cands = corpus.find_prose_candidates(
+            "游戏实机演示片段在网络上迅速传播。", top=3)
+        ok(any((p.get("fname") or "") == "games.md" for p in cands),
+           "game claim prefers the game-history source")
+
     # A section heading is not a spoken quote: verbatim wording alone is not
     # enough when the source line is a title.
     from app.judge import _check_quote

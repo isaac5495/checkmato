@@ -153,6 +153,12 @@ class Corpus:
         # document with hundreds of prose claims does not re-normalize 6k lines
         # per claim
         self.norm_lines = [tp.normalize(line[2]) for line in self.lines]
+        # per-file token vocabulary: a soft source-topic prior. A claim about
+        # games should prefer the game-history file even when the exact wording
+        # is absent; this is content-based, never a filename whitelist.
+        self.file_tokens = {}
+        for fname, _lineno, _raw, toks, _prec in self.lines:
+            self.file_tokens.setdefault(fname, set()).update(toks)
         self.passages = []
         self._build_passages()
         self.value_index = {}
@@ -437,6 +443,27 @@ class Corpus:
                 return p
         return None
 
+    def _source_file_scores(self, text):
+        """Top two source files by content overlap (soft topic prior).
+
+        Uses the claim's content tokens and inverse document frequency; the
+        final score is length-normalised so a huge file cannot win by size
+        alone. This is a retrieval signal, never evidence.
+        """
+        qt = {t for t in tp.tokens(text)
+              if t not in tp.STOP and len(t) > 1}
+        if not qt or not self.file_tokens:
+            return []
+        vals = []
+        for fname, ftoks in self.file_tokens.items():
+            shared = qt & ftoks
+            if not shared:
+                continue
+            raw = sum(1.0 / max(1, self.df.get(t, 1)) for t in shared)
+            vals.append((raw / (len(ftoks) ** 0.5 or 1.0), fname))
+        vals.sort(key=lambda x: (-x[0], x[1]))
+        return [fname for _score, fname in vals[:2]]
+
     def find_prose_candidates(self, text, top=5):
         """Rank passages/lines for a prose claim (a lead, never a verdict).
 
@@ -452,6 +479,7 @@ class Corpus:
             return []
         rare = self.rare_tokens(text, k=12)
         clues = tp.clue_terms(text)
+        top_files = self._source_file_scores(text)
         if not rare and not clues:
             return []
 
@@ -521,6 +549,9 @@ class Corpus:
             clue_hits = [c for c in clues if tp.normalize(c) in ptext]
             clue_score = sum(1.0 / max(1, self.df.get(t, 1))
                              for c in clue_hits for t in tp.tokens(c))
+            fname = p.get("fname") or ""
+            src_rank = top_files.index(fname) if fname in top_files else -1
+            src_bonus = 8.0 if src_rank == 0 else 4.0 if src_rank == 1 else 0.0
             # A source whose filename names the claim's subject (金山) is a
             # better lead than a same-topic paragraph from another company
             # (西山志). Soft bonus only: it can break a near-tie, not invent
@@ -534,13 +565,15 @@ class Corpus:
                      + 18.0 * len(unique_hits) + 3.0 * min(coverage, 6)
                      + 6.0 * len(title_hits)
                      + 40.0 * len(clue_hits) + 10.0 * clue_score
+                     + src_bonus
                      + 0.5 * phrase_len * phrase_len)
             item = dict(p)
             item["score"] = round(score, 6)
             item["why"] = {"lane": lane, "rare": rare_hits[:6],
                            "literal": lit_hits[:6], "unique": unique_hits[:4],
                            "coverage": coverage, "title": title_hits[:4],
-                           "clue": clue_hits[:4], "phrase": phrase_len}
+                           "clue": clue_hits[:4], "source": fname if src_rank >= 0 else "",
+                           "phrase": phrase_len}
             scored.append(item)
         scored.sort(key=lambda p: (-p["score"], p.get("fname") or "",
                                    p.get("start") or 0))
