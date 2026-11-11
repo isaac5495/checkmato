@@ -34,8 +34,12 @@ class BM25Index:
             return []
         try:
             q = bm25s.tokenize([query])
-            ids, scores = self._retriever.retrieve(
-                q, k=min(top, len(self.passages)))
+            # Retrieve a wider pool than requested: bm25s breaks equal-score
+            # ties at the k cutoff non-deterministically, and the evidence
+            # line can be one of the tied items just outside k. A wider pool
+            # plus the stable sort below makes the top-k reproducible.
+            k = min(len(self.passages), max(min(int(top) * 8, 256), 64))
+            ids, scores = self._retriever.retrieve(q, k=k)
         except Exception as e:
             log.warning("bm25s query failed: %s", e)
             return []
@@ -43,7 +47,11 @@ class BM25Index:
         for i, s in zip(ids[0], scores[0]):
             if float(s) > 0:
                 out.append((float(s), self.passages[int(i)]))
-        return out
+        # bm25s does not define an order for equal scores; make it stable so
+        # two runs of the same document cannot retrieve different evidence.
+        out.sort(key=lambda r: (-r[0], r[1].get("fname") or "",
+                                r[1].get("start") or 0))
+        return out[:max(1, int(top))]
 
     @property
     def version(self):

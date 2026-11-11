@@ -107,7 +107,8 @@ def _names_present(claim, raw, doc_entities=()):
     s_norm = tp.normalize(sentence)
     text = tp.normalize(raw)
     ents = sorted({tp.normalize(e) for e in (doc_entities or ())
-                   if e and _entity_like(str(e))}, key=len, reverse=True)
+                   if e and _entity_like(str(e))},
+                  key=lambda e: (-len(e), e))
     claim_ents = [e for e in ents if _contains_entity(s_norm, e)]
     anchor = claim_ents[0] if claim_ents else ""
     if not anchor:
@@ -422,7 +423,8 @@ def _check_number(claim, corpus):
                     for v in _line_values(text))
             return score
 
-        cand_p.sort(key=_score, reverse=True)
+        cand_p.sort(key=lambda p: (-_score(p), p.get("fname") or "",
+                                   p.get("start") or 0))
         for p in cand_p:
             text = p["text"]
             shared_p = set(kws) & p["tokens"]

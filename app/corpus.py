@@ -117,7 +117,8 @@ def _field_rerank(qtokens, pool):
                 * len(qtokens & (p.get("heading_tokens") or frozenset())))
         norm = hits / (span * len(qtokens))     # 0..1
         scored.append((float(score) * (1.0 + FIELD_BONUS_CAP * norm), p))
-    scored.sort(key=lambda r: -r[0])
+    scored.sort(key=lambda r: (-r[0], r[1].get("fname") or "",
+                               r[1].get("start") or 0))
     return [p for _s, p in scored]
 
 
@@ -380,7 +381,7 @@ class Corpus:
         cand = [t for t in toks
                 if t not in tp.STOP and not t.isdigit() and len(t) > 1
                 and self.df.get(t, 0) > 0]
-        cand.sort(key=lambda t: (self.df[t], -len(t)))
+        cand.sort(key=lambda t: (self.df[t], -len(t), t))
         return cand[:k]
 
     def find_lines(self, keywords, min_shared=1, top=12):

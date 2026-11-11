@@ -563,7 +563,7 @@ def detect_cjk_entities(paragraphs, max_n=200):
     ents.extend(q for q in quoted if q not in ents)
 
     def score(e):
-        return (counts.get(e, 0) + (3 if e in quoted else 0), len(e))
+        return (counts.get(e, 0) + (3 if e in quoted else 0), len(e), e)
 
     ents.sort(key=score, reverse=True)
     return list(dict.fromkeys(ents))[:max_n]

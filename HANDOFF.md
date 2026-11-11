@@ -1,7 +1,7 @@
 # CheckMato — Handoff
 
-Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` (local,
-not pushed) · all gates green.
+Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
+precision/determinism (local, not pushed) · all gates green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -28,10 +28,49 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   Prose still stays honestly `unverified` until W1.4, so the 90% target is
   still unreachable. Deterministic leftovers and the parked ideas are in
   `IMPROVEMENT_PLAN.md` §12 and the "Out-of-scope findings" below.
-- Verification set: `tests\run_all.py` (16 suites) plus `test_byos.py` (48),
+- Verification set: `tests\run_all.py` (17 suites) plus `test_byos.py` (48),
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-11 — W5 precision cleanup + deterministic retrieval (code changed)
+
+The KS residual was 19 internal conflicts; the English doc had 11 timeline
+flags. Nearly all were different facts, not contradictions. `app/checks.py`:
+
+- `_metric()`: metric family closest to each figure (revenue / gross profit /
+  net profit / funding / bonus / target / reserve / ownership / voting /
+  cost). A known different metric is a different fact.
+- `_pct_base()`: Chinese `20%的股权` vs `22.89%的投票权`; it locates the raw
+  percentage first so "2020" is not read as "20%".
+- `_scope()`: department-level vs group-level figures.
+- `_BONUS_GENERIC`: different people's bonuses share only generic words.
+- `_in_date_range()`: a year that is a range endpoint
+  (2017年12月至2018年1月; December 2017 and January 2018) is not a standalone date.
+- `entity_timelines()`: sentence-level entity match, full multi-word name,
+  sibling skip (Kingsoft Cloud ≠ Kingsoft), months/document titles excluded.
+- `timeline_conflicts()`: version split, date-range filter, and Jaccard ≥ 0.30
+  between the years' sentences (same event, not just the same verb).
+
+**Determinism bug found and fixed.** Two fresh CLI processes on the same KS
+document flipped 2–5 borderline claims (supported ↔ unverified) and their
+evidence. Root causes were hash-order ties, not bm25s alone:
+`Corpus.rare_tokens` (df/length ties), `judge._names_present` (equal-length
+entity), `detect_cjk_entities` (quoted-set tie at max_n), the bm25s equal-score
+cutoff, `_field_rerank`, and `cand_p`. All now have full `(fname, start)` /
+token-string tie-breaks. Two fresh end-to-end runs (det7/det8) now have **0
+verdict and 0 evidence differences**.
+
+Results:
+- KS Chinese (347 claims, 5 BYOS sources): internal 19 → **0**; timeline 4 → 0;
+  supported 76 → **81** (stable across two fresh processes).
+- English doc (541 claims, no library): timeline 11 → **0**.
+- Tests: `tests/test_precision.py` 14 assertions; `tests/run_all.py` 17 suites,
+  all PASS.
+
+Caveat: 0 flags on these two documents means no remaining contradiction was
+found, not that the documents are proven consistent; the true-positive controls
+(same revenue, same shares, same version, same person's bonus) still fire.
 
 ## 2026-11-11 — W1.4 semantic prose judge, support-only (code changed)
 
