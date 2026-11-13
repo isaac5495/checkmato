@@ -6,6 +6,9 @@ study / article / paper draft: CheckMato extracts every checkable claim
 returns a report where **nothing is asserted beyond the evidence shown** —
 each verdict links to a `file:line`, a web snippet, or says "unverified".
 
+Live: **https://checkmato-app.vercel.app** (Vercel frontend) ·
+**https://checkmato.fly.dev** (full app + API on Fly.io).
+
 ## Gates (run before every change)
 
 ```

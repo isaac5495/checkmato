@@ -15,10 +15,11 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
 
 ## Repo state (2026-11-09)
 
-- `main` is up to date with `origin/main` at `3fcd37e`; the W1.3, search-cache,
-  W1.4, W5, W6 and W2 changes are pushed. The only untracked file is
-  `Ledgerline_New_Business_Proposal.docx`, deliberately left out (course
-  document — do not add it). `.opencode` is ignored by the tooling.
+- `main` is up to date with `origin/main`; the W1.3, search-cache, W1.4, W5,
+  W6, W2 changes and the 2026-11-13 hosted-deployment fixes are pushed. The
+  only untracked file is `Ledgerline_New_Business_Proposal.docx`, deliberately
+  left out (course document — do not add it). `.opencode` is ignored by the
+  tooling.
 - Search cost, measured on a 628-word chapter with the LLM off (2026-11-02):
   5 searches / 1 page = 4.9 s, 9 supported, ≤ **$0.00375**; full depth =
   54 searches / 20 pages (of a 243-search budget), 42.5 s, 14 supported,
