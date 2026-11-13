@@ -46,7 +46,7 @@ def run(doc_path, corpus_dir=None, out_dir="reports", use_web=False, use_llm=Fal
     cfg = cfg or _cfg.load()
     if semantic_retrieval or cfg.get("semantic_retrieval"):
         os.environ["CHECKMATO_SEMANTIC"] = "1"
-    import corpus as _corpus_mod
+    from . import corpus as _corpus_mod
     _corpus_mod.VERBATIM_CUT = cfg["quote_verbatim_cut"]
     _corpus_mod.PARAPHRASE_CUT = cfg["quote_paraphrase_cut"]
     alias = AliasMap.load(names)

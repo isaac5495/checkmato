@@ -8,6 +8,7 @@ reports/
 web/node_modules/
 web/.next/
 web/.vercel/
+web/.env*
 checkmato.toml
 logs/
 .ruff_cache/

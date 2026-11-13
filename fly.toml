@@ -5,7 +5,12 @@ primary_region = "sin"   # change to your nearest region
 
 [env]
   PORT = "8000"
-  CHECKMATO_CORS_ORIGINS = "*"   # lock to your Vercel URL after the first deploy
+  CHECKMATO_CORS_ORIGINS = "https://checkmato-app.vercel.app,https://out-cyan-eight.vercel.app,https://out-check-mato.vercel.app,https://checkmato.fly.dev"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"
 
 [[mounts]]
   source = "checkmato_data"
