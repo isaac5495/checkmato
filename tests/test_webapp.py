@@ -96,6 +96,8 @@ def main():
     _, rep2 = run_check(client, with_corpus=True)
     v2 = {x["verdict"] for x in rep2["findings"]}
     assert {"contradicted", "supported"} <= v2, v2
+    assert rep2["meta"]["byos_sources"] > 0, rep2["meta"]
+    assert str(rep2["meta"]["mode"]).startswith("sources"), rep2["meta"]["mode"]
     founded = next(x for x in rep2["findings"] if x["quote"] == "2008")
     assert founded["verdict"] == "contradicted" and founded["evidence"]
     assert any(".pdf" in e["ref"] for x in rep2["findings"]

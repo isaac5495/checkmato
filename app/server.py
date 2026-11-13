@@ -214,11 +214,12 @@ async def check(request: Request, text: str = Form(""),
             quota.charge_ip(ip, words)
         try:
             findings, meta = run(
-                str(doc_path), str(corpus_dir) if corpus_dir else None, str(out),
+                str(doc_path), None, str(out),
                 use_web=web, use_llm=llm, max_search=CFG["max_search"],
                 whitelist=[w.strip() for w in whitelist.split(",") if w.strip()],
                 names=str(names_path) if names_path else None, cfg=CFG,
                 backend=backend,
+                library=str(corpus_dir) if corpus_dir else None,
                 free_tier=bool(CFG.get("enforce_ip_quota", True)),
                 semantic_retrieval=bool(CFG.get("semantic_retrieval", False)),
                 progress=lambda ev: loop.call_soon_threadsafe(q.put_nowait, ev),
