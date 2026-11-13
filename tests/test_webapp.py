@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["CHECKMATO_QUOTA_PATH"] = str(ROOT / "tests" / "_quota_test.json")
 from fastapi.testclient import TestClient  # noqa: E402
-from app.server import CFG, QUOTA, app  # noqa: E402
+from app.server import CFG, QUOTA, _client_ip, app  # noqa: E402
 
 CFG["enforce_ip_quota"] = True    # exercise the hosted guest budget explicitly;
                                   # the dev toml ships enforce_ip_quota = false
@@ -61,6 +61,18 @@ def run_check(client, with_corpus=False):
 def main():
     QUOTA.clear()
     Path(os.environ["CHECKMATO_QUOTA_PATH"]).unlink(missing_ok=True)
+
+    class Req:
+        def __init__(self, headers, host="10.0.0.1"):
+            self.headers = headers
+            self.client = type("C", (), {"host": host})()
+
+    assert _client_ip(Req({"fly-client-ip": "203.0.113.9",
+                           "x-forwarded-for": "6.6.6.6"})) == "203.0.113.9"
+    assert _client_ip(Req({"x-forwarded-for": "198.51.100.7, 10.0.0.1"})) \
+        == "198.51.100.7"
+    print("  client IP: provider header wins over spoofable XFF")
+
     client = TestClient(app)
     h = client.get("/api/health").json()
     assert h["ok"] and h["quota"]["runs_per_day"] >= 1

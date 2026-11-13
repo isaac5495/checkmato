@@ -1,8 +1,9 @@
 # CheckMato — Handoff
 
-Status: 2026-11-11 · W1.3 + search cache + W1.4 behind `--semantic` + W5
+Status: 2026-11-13 · W1.3 + search cache + W1.4 behind `--semantic` + W5
 precision/determinism + W6 coverage + free tier/UI + clue/source retrieval +
-W2 semantic retrieval (local, experimental/default off) · 21 suites green.
+W2 semantic retrieval (local, experimental/default off) + hosted Fly backend /
+Vercel frontend · 21 suites green.
 BYOS + English-first + DeepSeek Search are the current engine; W1.1 (prose
 retrieval), W1.2 (commentary eligibility) and W1.3 (claim units / multi-lead)
 are done; W1.4 now has an opt-in support-only semantic judge behind
@@ -33,6 +34,41 @@ Product spec stays in `PRD_factcheck_tool.md`; this file is "what is true NOW".
   `test_claims.py` (10), `test_retrieval.py` (14), `test_no_case_literals.py`,
   `test_byos_offline.py` (0 connections), `run_eval_en.py` and
   `run_eval_holdout.py`.
+
+## 2026-11-13 — hosted deployment (Vercel frontend + Fly backend)
+
+Live now:
+
+- Frontend: **https://checkmato-app.vercel.app** (production alias;
+  `https://out-cyan-eight.vercel.app` also points to the same deployment)
+- Full app + API: **https://checkmato.fly.dev** (Fly app `checkmato`, region
+  `sin`, 512 MB shared CPU, volume `checkmato_data` mounted at
+  `/tmp/checkmato_jobs`; the image also serves the static UI)
+- Health: `https://checkmato.fly.dev/api/health`
+
+How it is deployed:
+
+- Backend: `flyctl deploy --app checkmato --remote-only --now --yes --ha=false`.
+  Secrets are imported from `.env` (`DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`,
+  `AGNES_API_KEY`, `NEW_AGNES_API_KEY`, `JEV_API_KEY`) plus
+  `CHECKMATO_CORS_ORIGINS` for the three Vercel aliases and the Fly host.
+- Frontend: build with `NEXT_PUBLIC_API_URL=https://checkmato.fly.dev`, then
+  `vercel deploy out --prod --yes --scope check-mato --project checkmato-app`.
+  The Vercel project is a **prebuilt static upload, not Git-linked**: a push to
+  GitHub does not update it. The production env var `NEXT_PUBLIC_API_URL` is
+  set for future builds.
+- Smoke test (BYOS upload: Acme `$125 million`/2023 + founded 1999): mode
+  `sources_then_web`, `byos_sources: 1`, 3 claims, **2 supported + 1
+  checked-not-found**, evidence `corpus2.txt:1`. Guest quota decremented.
+- Two deployment-only bugs found and fixed: `app/cli.py` imported top-level
+  `corpus` (worked locally only because the repo data directory was on
+  `sys.path`, failed in Docker with "No module named 'corpus'"); and
+  `/api/check` passed the uploaded corpus as `corpus_dir` instead of `library`,
+  so web uploads reported `web_only` and `byos_sources: 0`.
+- Guest quota is **1 run/day/IP, 10k words/doc**; the Fly machine auto-stops
+  when idle, so the first request after a quiet period may take ~20 s.
+- Vercel's `vercel link` creates `web/.env.local` with an OIDC token; it is
+  deleted and `web/.env*` is ignored by git and Docker. Do not commit it.
 
 ## 2026-11-11 — W2 semantic retrieval (optional local embeddings) (code changed)
 

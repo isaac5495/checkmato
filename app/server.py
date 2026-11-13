@@ -59,13 +59,22 @@ _LOCK = threading.Lock()
 def _client_ip(request: Request):
     """Real visitor IP behind a proxy. request.client.host is the load
     balancer's address on every hosted deploy (Railway/Fly/Vercel) — using it
-    would collapse all visitors into ONE daily quota bucket."""
-    fwd = request.headers.get("x-forwarded-for") or ""
-    if fwd:
-        return fwd.split(",")[0].strip()
+    would collapse all visitors into ONE daily quota bucket.
+
+    Provider-set headers win over `X-Forwarded-For`: the latter is
+    client-editable, so trusting its first value lets a visitor mint a new
+    quota bucket per request on Fly.
+    """
+    for name in ("fly-client-ip", "cf-connecting-ip"):
+        value = request.headers.get(name)
+        if value:
+            return value.strip()
     real = request.headers.get("x-real-ip")
     if real:
         return real.strip()
+    fwd = request.headers.get("x-forwarded-for") or ""
+    if fwd:
+        return fwd.split(",")[0].strip()
     return request.client.host if request.client else "anon"
 
 
